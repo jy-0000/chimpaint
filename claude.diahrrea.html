@@ -368,7 +368,7 @@
                  // tileOffset is set once here; latent starts at that offset.
 				 let  tileOffsetSpread = 1;
                  let tileOffset = new Array(16).fill(0).map(() =>
-                     (Math.random() - 0.5) * 2 * tileOffsetSpread
+                     (Math.random())/2
                  );
                  let latent = tileOffset.map(v => Math.max(-3.5, Math.min(3.5, v)));
                  tileGrid[row][col] = {
