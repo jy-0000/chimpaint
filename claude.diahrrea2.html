@@ -123,6 +123,52 @@
 			display: block;
 			image-rendering: pixelated;
 		}
+
+		/* ── Latent offset panel ── */
+		.latent-offset-grid {
+			display: grid;
+			grid-template-columns: repeat(8, 1fr);
+			gap: 6px;
+			margin-top: 10px;
+		}
+		.latent-offset-cell {
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			gap: 2px;
+		}
+		.latent-offset-cell label {
+			font-size: 11px;
+			opacity: 0.8;
+			min-width: unset;
+		}
+		.latent-offset-cell input[type=number] {
+			width: 100%;
+			padding: 3px 4px;
+			font-size: 12px;
+			box-sizing: border-box;
+			background: rgba(255,255,255,0.15);
+			border: 1px solid rgba(255,255,255,0.4);
+			border-radius: 3px;
+			color: white;
+			text-align: center;
+		}
+		.latent-offset-cell input[type=number]::placeholder { color: rgba(255,255,255,0.4); }
+
+		/* ── Per-tile offset panel ── */
+		#tileOffsetSection { display: none; }
+		.tile-offset-block {
+			border: 1px solid rgba(255,255,255,0.3);
+			border-radius: 4px;
+			padding: 8px;
+			margin-bottom: 8px;
+			background: rgba(0,0,0,0.15);
+		}
+		.tile-offset-block h5 {
+			margin: 0 0 6px 0;
+			font-size: 12px;
+			opacity: 0.9;
+		}
 	</style>
 </head>
 <body>
@@ -213,6 +259,24 @@
 			<small>Current Mode: <strong id="currentMode">Smooth</strong></small>
 		</div>
 	</div>
+
+	<!-- ── Global Latent Offset ── -->
+	<div class="section">
+		<h3>Global Latent Offset</h3>
+		<small>Added to every dimension of the shared latent root before decoding. Values are additive with animation. Use "Apply &amp; Redraw" to push a one-shot render, or leave animation running for live effect.</small>
+		<div class="latent-offset-grid" id="globalOffsetGrid"></div>
+		<div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+			<button id="applyGlobalOffset">Apply &amp; Redraw</button>
+			<button id="resetGlobalOffset">Reset All to 0</button>
+		</div>
+	</div>
+
+	<!-- ── Per-Tile Latent Offset ── -->
+	<div class="section" id="tileOffsetSection">
+		<h3>Per-Tile Latent Offset</h3>
+		<small>Each tile's effective latent = shared root + global offset + frozen spatial jitter + this per-tile offset. Values are additive per tile.</small>
+		<div id="tileOffsetContainer"></div>
+	</div>
 	
 	<div class="section" style="display:none;">
 		<h3>Seeds</h3>
@@ -283,10 +347,6 @@
 		let ctx = canvas.getContext('2d');
 
 		// --- Multi-tile state ---
-		// tileGrid[row][col] = { canvas, ctx, tileOffset }
-		// NOTE: tiles no longer store their own latent or velocity.
-		// All animation is driven by the single shared currentLatent + velocity.
-		// Each tile's effective latent = currentLatent + tileOffset (read-only at render time).
 		let tileGrid = [];
 		let tileCount = 1;
 		let multiMode = false;
@@ -302,7 +362,7 @@
 			learningRate:0.03
 		});
 
-		// --- Shared animation state (single source of truth) ---
+		// --- Shared animation state ---
 		let currentLatent = [];
 		let velocity = new Array(16).fill(0);
 		let targetLatent = null;
@@ -322,9 +382,126 @@
 			0.5, 0.5, 0.5, 0.5,
 			0.7, 0.7, 0.7, 0.7
 		];
+
+		// ── Global latent offset (16 values, user-editable) ──
+		let globalLatentOffset = new Array(16).fill(0);
+
+		// ── Per-tile latent offsets: keyed by "row_col", each is Array(16) ──
+		let tileLatentOffsets = {};
+
+		// ── Build the global offset UI ──
+		function buildGlobalOffsetUI() {
+			let grid = $('globalOffsetGrid');
+			grid.innerHTML = '';
+			for(let i = 0; i < 16; i++) {
+				let cell = document.createElement('div');
+				cell.className = 'latent-offset-cell';
+				cell.innerHTML = `<label>L${i}</label><input type="number" id="goff_${i}" value="0" step="0.05" placeholder="0">`;
+				grid.appendChild(cell);
+				cell.querySelector('input').addEventListener('input', () => {
+					globalLatentOffset[i] = parseFloat(cell.querySelector('input').value) || 0;
+				});
+			}
+		}
+
+		function resetGlobalOffset() {
+			globalLatentOffset.fill(0);
+			for(let i = 0; i < 16; i++) {
+				let el = $(`goff_${i}`);
+				if(el) el.value = '0';
+			}
+		}
+
+		// ── Build per-tile offset UI for current tileGrid ──
+		function buildTileOffsetUI() {
+			let container = $('tileOffsetContainer');
+			container.innerHTML = '';
+			$('tileOffsetSection').style.display = multiMode ? '' : 'none';
+			if(!multiMode) return;
+
+			for(let row = 0; row < tileCount; row++) {
+				for(let col = 0; col < tileCount; col++) {
+					let key = `${row}_${col}`;
+					if(!tileLatentOffsets[key]) tileLatentOffsets[key] = new Array(16).fill(0);
+
+					let block = document.createElement('div');
+					block.className = 'tile-offset-block';
+					block.innerHTML = `<h5>Tile [${row}, ${col}]</h5>`;
+
+					let innerGrid = document.createElement('div');
+					innerGrid.className = 'latent-offset-grid';
+
+					for(let i = 0; i < 16; i++) {
+						let cell = document.createElement('div');
+						cell.className = 'latent-offset-cell';
+						cell.innerHTML = `<label>L${i}</label><input type="number" id="toff_${row}_${col}_${i}" value="0" step="0.05" placeholder="0">`;
+						innerGrid.appendChild(cell);
+						cell.querySelector('input').addEventListener('input', () => {
+							tileLatentOffsets[key][i] = parseFloat(cell.querySelector('input').value) || 0;
+						});
+					}
+
+					let resetBtn = document.createElement('button');
+					resetBtn.textContent = 'Reset tile offsets';
+					resetBtn.style.marginTop = '6px';
+					resetBtn.onclick = () => {
+						tileLatentOffsets[key].fill(0);
+						for(let i = 0; i < 16; i++) {
+							let el = $(`toff_${row}_${col}_${i}`);
+							if(el) el.value = '0';
+						}
+					};
+
+					block.appendChild(innerGrid);
+					block.appendChild(resetBtn);
+					container.appendChild(block);
+				}
+			}
+		}
+
+		// ── Compute effective latent for a tile ──
+		// effectiveLatent[i] = currentLatent[i] + globalOffset[i] + frozenTileJitter[i] + perTileOffset[i]
+		function getEffectiveLatent(tile, row, col) {
+			let key = `${row}_${col}`;
+			let perTile = tileLatentOffsets[key] || new Array(16).fill(0);
+			return currentLatent.map((v, i) =>
+				Math.max(-3.5, Math.min(3.5,
+					v + globalLatentOffset[i] + tile.tileOffset[i] + perTile[i]
+				))
+			);
+		}
+
+		// ── Compute effective latent for single-tile mode ──
+		function getEffectiveLatentSingle() {
+			return currentLatent.map((v, i) =>
+				Math.max(-3.5, Math.min(3.5, v + globalLatentOffset[i]))
+			);
+		}
 		
 		encoder.fromJSON(generalNet["encoder"]);
 		decoder.fromJSON(generalNet["decoder"]);
+
+		buildGlobalOffsetUI();
+
+		$('applyGlobalOffset').onclick = () => {
+			if(multiMode) {
+				for(let row = 0; row < tileCount; row++)
+					for(let col = 0; col < tileCount; col++)
+						drawTile(tileGrid[row][col], null, row, col);
+			} else {
+				drawLatentWithOffset(currentLatent);
+			}
+		};
+		$('resetGlobalOffset').onclick = () => {
+			resetGlobalOffset();
+			if(multiMode) {
+				for(let row = 0; row < tileCount; row++)
+					for(let col = 0; col < tileCount; col++)
+						drawTile(tileGrid[row][col], null, row, col);
+			} else {
+				drawLatentWithOffset(currentLatent);
+			}
+		};
 
 		// ---- Tile resolution UI ----
 		function updateTileNote() {
@@ -335,11 +512,10 @@
 		$('tileSelect').oninput = updateTileNote;
 		updateTileNote();
 
-		// Build the tile grid canvases in the wrapper div.
-		// Tiles store only a frozen tileOffset; all motion lives in currentLatent/velocity.
 		function setupTileGrid(n) {
 			tileCount = n;
 			multiMode = n > 1;
+			tileLatentOffsets = {};
 			let wrapper = $('tileWrapper');
 			wrapper.innerHTML = '';
 
@@ -369,9 +545,8 @@
 					tc.style.display = 'block';
 					wrapper.appendChild(tc);
 
-					// Frozen spatial offset — set once, never updated during animation.
-					// Keeps neighbouring tiles visually distinct without independent drift.
 					let tileOffset = new Array(16).fill(0).map(() => (Math.random() - 0.5) / 16);
+					tileLatentOffsets[`${row}_${col}`] = new Array(16).fill(0);
 
 					tileGrid[row][col] = {
 						canvas: tc,
@@ -380,11 +555,12 @@
 					};
 				}
 			}
+
+			buildTileOffsetUI();
 		}
 
-		// Draw a tile by decoding (currentLatent + tileOffset).
-		// rawPixels path is kept for the encode/blit workflow.
-		function drawTile(tile, rawPixels) {
+		// Draw a tile — now accepts row/col to compute the full effective latent.
+		function drawTile(tile, rawPixels, row, col) {
 			let imgd = tile.ctx.getImageData(0, 0, 16, 16);
 			let d = imgd.data;
 			if(rawPixels) {
@@ -396,10 +572,9 @@
 					d[j++] = 255;
 				}
 			} else {
-				// Effective latent = shared root + frozen tile offset, clamped.
-				let effectiveLatent = currentLatent.map((v, i) =>
-					Math.max(-3.5, Math.min(3.5, v + tile.tileOffset[i]))
-				);
+				let effectiveLatent = (row !== undefined && col !== undefined)
+					? getEffectiveLatent(tile, row, col)
+					: currentLatent.map((v, i) => Math.max(-3.5, Math.min(3.5, v + tile.tileOffset[i])));
 				let decoded = arrayify(decoder.run(effectiveLatent));
 				let j = 0;
 				for(let i = 0; i < decoded.length; i += 3){
@@ -456,9 +631,11 @@
 			return a * (1.0 - u) + b * u;
 		}
 
-		function drawLatent(latentSpace){
-		    currentLatent = latentSpace;
-			let decoded = arrayify(decoder.run(latentSpace));
+		// Draw single-tile with global offset applied.
+		function drawLatentWithOffset(latentSpace) {
+			currentLatent = latentSpace;
+			let effective = getEffectiveLatentSingle();
+			let decoded = arrayify(decoder.run(effective));
 			let newImg = ctx.getImageData(0,0,canvas.width,canvas.height);
 			for(let i=0;i<decoded.length;i+=4){
 				decoded.splice(i+3,0,1);
@@ -469,7 +646,12 @@
 			ctx.putImageData(newImg,0,0);
 		}
 
-		// Compute the acceleration for the shared latent root — called once per frame.
+		// Legacy drawLatent kept for internal callers that don't need offset
+		// (seed buttons set currentLatent then call this; offset is applied in drawLatentWithOffset)
+		function drawLatent(latentSpace){
+			drawLatentWithOffset(latentSpace);
+		}
+
 		function computeAcceleration() {
 			let acc = new Array(16).fill(0);
 			noiseOffset += 0.02;
@@ -505,7 +687,6 @@
 			return acc;
 		}
 
-		// Integrate the shared acceleration into currentLatent via velocity — one call per frame.
 		function applyAcceleration(acc) {
 			let maxVel = motionMode === 'unfiltered' ? 0.8 : 0.4;
 			let mom    = motionMode === 'unfiltered' ? 0.6 : momentum;
@@ -519,8 +700,6 @@
 			}
 		}
 
-		// Advance animation by one frame.
-		// The shared latent root moves; each tile reads (root + frozen offset) at draw time.
 		function stepMotion() {
 			let acc = computeAcceleration();
 			applyAcceleration(acc);
@@ -528,18 +707,17 @@
 			if(multiMode) {
 				for(let row = 0; row < tileCount; row++){
 					for(let col = 0; col < tileCount; col++){
-						drawTile(tileGrid[row][col]);
+						drawTile(tileGrid[row][col], null, row, col);
 					}
 				}
 			} else {
-				drawLatent(currentLatent);
+				drawLatentWithOffset(currentLatent);
 			}
 		}
 
 		let recordingVideo = false;
 		let globalAudio = new Audio();
 
-		// Capture all tile canvases into a composite ImageData for recording
 		function captureCompositeFrame() {
 			if(!multiMode) {
 				return ctx.getImageData(0,0,canvas.width,canvas.height).data;
@@ -625,7 +803,6 @@
 			draw();
 		}
 
-		// Extract a 16×16 pixel patch from ImageData at tile (col, row)
 		function extractTilePixels(imageData, col, row, imgWidth) {
 			let pixels = [];
 			for(let ty=0; ty<16; ty++){
@@ -666,15 +843,12 @@
 
 				if(n === 1) {
 					let pixels = extractTilePixels(imageData, 0, 0, 16);
-					// Encode the single tile to set the shared latent root.
 					currentLatent = [...arrayify(encoder.run(pixels))];
 					velocity.fill(0);
 					targetLatent = null;
 					blitPixelsToCanvas(pixels, ctx, canvas);
 				} else {
 					setupTileGrid(n);
-					// Encode the centre tile (or tile 0,0) as the shared latent root.
-					// All tiles will render as (root + their frozen offset) from this point.
 					let centreRow = Math.floor(n / 2);
 					let centreCol = Math.floor(n / 2);
 					let centrePixels = extractTilePixels(imageData, centreCol, centreRow, n*16);
@@ -682,7 +856,6 @@
 					velocity.fill(0);
 					targetLatent = null;
 
-					// Blit each tile's raw crop for accurate initial display.
 					for(let row=0; row<n; row++){
 						for(let col=0; col<n; col++){
 							let pixels = extractTilePixels(imageData, col, row, n*16);
@@ -699,7 +872,6 @@
 			}
 		}
 
-		// Blit a flat normalised RGB pixel array [R,G,B, R,G,B...] directly onto a canvas context
 		function blitPixelsToCanvas(pixels, targetCtx, targetCanvas) {
 			let imgd = targetCtx.getImageData(0, 0, targetCanvas.width, targetCanvas.height);
 			let j = 0;
@@ -772,7 +944,6 @@
 
 				console.log('Training complete!');
 
-				// After training: set shared root from centre tile, blit raw crops.
 				if(n > 1) {
 					setupTileGrid(n);
 					let centreRow = Math.floor(n / 2);
@@ -854,9 +1025,9 @@
 			if(multiMode) {
 				for(let row=0;row<tileCount;row++)
 					for(let col=0;col<tileCount;col++)
-						drawTile(tileGrid[row][col]);
+						drawTile(tileGrid[row][col], null, row, col);
 			} else {
-				drawLatent(currentLatent);
+				drawLatentWithOffset(currentLatent);
 			}
 		}
 
@@ -867,9 +1038,9 @@
 			if(multiMode) {
 				for(let row=0;row<tileCount;row++)
 					for(let col=0;col<tileCount;col++)
-						drawTile(tileGrid[row][col]);
+						drawTile(tileGrid[row][col], null, row, col);
 			} else {
-				drawLatent(currentLatent);
+				drawLatentWithOffset(currentLatent);
 			}
 		}
 
@@ -893,7 +1064,7 @@
 		// Init single-tile default
 		let latent = [];
 		for(let i=0;i<16;i++) latent.push((Math.random()-0.5)*2);
-		drawLatent(latent);
+		drawLatentWithOffset(latent);
 	</script>
 </body>
 </html>
