@@ -376,17 +376,29 @@
 			}
 		}
 
-		// Draw a single tile
-		function drawTile(tile) {
-			let decoded = arrayify(decoder.run(tile.latent));
+		// Draw a single tile — pass rawPixels (0..1 flat RGB array) to blit directly,
+		// or omit to decode through the VAE (used during animation).
+		function drawTile(tile, rawPixels) {
 			let imgd = tile.ctx.getImageData(0,0,16,16);
 			let d = imgd.data;
-			let j = 0;
-			for(let i=0;i<decoded.length;i+=3){
-				d[j++] = decoded[i]*255;
-				d[j++] = decoded[i+1]*255;
-				d[j++] = decoded[i+2]*255;
-				d[j++] = 255;
+			if(rawPixels) {
+				// Direct blit: rawPixels is flat [R,G,B, R,G,B, ...] normalised 0..1
+				let j = 0;
+				for(let i=0;i<rawPixels.length;i+=3){
+					d[j++] = rawPixels[i]*255;
+					d[j++] = rawPixels[i+1]*255;
+					d[j++] = rawPixels[i+2]*255;
+					d[j++] = 255;
+				}
+			} else {
+				let decoded = arrayify(decoder.run(tile.latent));
+				let j = 0;
+				for(let i=0;i<decoded.length;i+=3){
+					d[j++] = decoded[i]*255;
+					d[j++] = decoded[i+1]*255;
+					d[j++] = decoded[i+2]*255;
+					d[j++] = 255;
+				}
 			}
 			tile.ctx.putImageData(imgd,0,0);
 		}
@@ -649,45 +661,38 @@
 				let n = parseInt($('tileSelect').value);
 				let img = await loadImageToCanvas(imageUrl);
 
+				// Always draw the full image onto a scratch canvas at n*16 resolution
+				let scratch = document.createElement('canvas');
+				scratch.width = n*16; scratch.height = n*16;
+				let sctx = scratch.getContext('2d');
+				sctx.drawImage(img, 0, 0, n*16, n*16);
+				let imageData = sctx.getImageData(0, 0, n*16, n*16);
+
 				if(n === 1) {
-					// Original single-tile path
-					let tempCanvas = $('theVoices');
-					let tempCtx = tempCanvas.getContext('2d');
-					tempCtx.drawImage(img, 0, 0, 16, 16);
-					let imageData = tempCtx.getImageData(0, 0, 16, 16);
-					let pixels = [];
-					for(let i=0;i<imageData.data.length;i+=4){
-						pixels.push(imageData.data[i]/255);
-						pixels.push(imageData.data[i+1]/255);
-						pixels.push(imageData.data[i+2]/255);
-					}
-					let latent = arrayify(encoder.run(pixels));
-					currentLatent = latent;
+					// Single tile: extract pixels, encode, store latent, blit raw pixels to canvas
+					let pixels = extractTilePixels(imageData, 0, 0, 16);
+					currentLatent = arrayify(encoder.run(pixels));
 					velocity.fill(0);
 					targetLatent = null;
-					drawLatent(currentLatent);
+					// Blit the raw crop directly so the image shows correctly regardless of VAE quality
+					blitPixelsToCanvas(pixels, ctx, canvas);
 				} else {
-					// Multi-tile: draw full image to an n*16 scratch canvas
+					// Multi-tile: set up the grid of canvases first (does not assign latents)
 					setupTileGrid(n);
-					let scratch = document.createElement('canvas');
-					scratch.width = n*16; scratch.height = n*16;
-					let sctx = scratch.getContext('2d');
-					sctx.drawImage(img, 0, 0, n*16, n*16);
-					let imageData = sctx.getImageData(0,0,n*16,n*16);
-
-					for(let row=0;row<n;row++){
-						for(let col=0;col<n;col++){
+					// Re-extract from scratch (setupTileGrid doesn't touch imageData)
+					for(let row=0; row<n; row++){
+						for(let col=0; col<n; col++){
 							let pixels = extractTilePixels(imageData, col, row, n*16);
-							let latent = arrayify(encoder.run(pixels));
 							let tile = tileGrid[row][col];
-							tile.latent = latent;
+							// Each tile gets the latent of its own unique crop
+							tile.latent = arrayify(encoder.run(pixels));
 							tile.velocity.fill(0);
-							drawTile(tile);
+							// Blit the raw crop pixels directly — no VAE decode needed here
+							blitPixelsToCanvas(pixels, tile.ctx, tile.canvas);
 						}
 					}
-					// Keep currentLatent in sync with tile[0][0] for seed/velocity purposes
 					currentLatent = [...tileGrid[0][0].latent];
-					velocity = [...tileGrid[0][0].velocity];
+					velocity.fill(0);
 					targetLatent = null;
 				}
 			} catch(error) {
@@ -697,6 +702,19 @@
 				$('encodeButton').disabled = false;
 				$('encodeButton').textContent = 'Encode & Display';
 			}
+		}
+
+		// Blit a flat normalised RGB pixel array [R,G,B, R,G,B...] directly onto a canvas context
+		function blitPixelsToCanvas(pixels, targetCtx, targetCanvas) {
+			let imgd = targetCtx.getImageData(0, 0, targetCanvas.width, targetCanvas.height);
+			let j = 0;
+			for(let i=0; i<pixels.length; i+=3){
+				imgd.data[j++] = pixels[i]   * 255;
+				imgd.data[j++] = pixels[i+1] * 255;
+				imgd.data[j++] = pixels[i+2] * 255;
+				imgd.data[j++] = 255;
+			}
+			targetCtx.putImageData(imgd, 0, 0);
 		}
 		
 		async function tuneModel() {
@@ -732,11 +750,14 @@
 				let encoderIterations = Math.floor(iterations * 0.6);
 				let decoderIterations = iterations - encoderIterations;
 
-				// Train on all tiles
-				let encoderTraining = allTilePixels.map(pixels => ({
-					input: pixels,
-					output: new Array(16).fill(0)
-				}));
+				// Phase 1: train encoder — give each tile a distinct spread target
+				// so different crops map to different latent codes.
+				let encoderTraining = allTilePixels.map((pixels, idx) => {
+					let target = new Array(16).fill(0).map((_, d) =>
+						Math.sin((idx + 1) * (d + 1) * 0.7) * 0.8
+					);
+					return { input: pixels, output: target };
+				});
 
 				console.log('Training encoder...');
 				encoder.train(encoderTraining, {
@@ -745,11 +766,13 @@
 					log: true, logPeriod: 10
 				});
 
-				// Build decoder training pairs
-				let decoderTraining = allTilePixels.map(pixels => {
-					let latent = arrayify(encoder.run(pixels));
-					return { input: latent, output: pixels };
-				});
+				// Phase 2: encode each tile to get its learned latent,
+				// then train decoder to reconstruct original pixels from it.
+				let tileLatents = allTilePixels.map(pixels => arrayify(encoder.run(pixels)));
+				let decoderTraining = allTilePixels.map((pixels, idx) => ({
+					input: tileLatents[idx],
+					output: pixels
+				}));
 
 				console.log('Training decoder...');
 				decoder.train(decoderTraining, {
@@ -760,27 +783,27 @@
 
 				console.log('Training complete!');
 
-				// Re-encode and display
+				// After training: re-encode, store unique per-tile latents,
+				// blit raw source pixels for accurate display.
+				// Animation will decode from tile.latent via decoder.run().
 				if(n > 1) {
 					setupTileGrid(n);
-					for(let row=0;row<n;row++){
-						for(let col=0;col<n;col++){
-							let pixels = allTilePixels[row*n+col];
-							let latent = arrayify(encoder.run(pixels));
+					for(let row=0; row<n; row++){
+						for(let col=0; col<n; col++){
+							let pixels = allTilePixels[row*n + col];
 							let tile = tileGrid[row][col];
-							tile.latent = latent;
+							tile.latent = arrayify(encoder.run(pixels));
 							tile.velocity.fill(0);
-							drawTile(tile);
+							blitPixelsToCanvas(pixels, tile.ctx, tile.canvas);
 						}
 					}
 					currentLatent = [...tileGrid[0][0].latent];
-					velocity = [...tileGrid[0][0].velocity];
+					velocity.fill(0);
 				} else {
 					let pixels = allTilePixels[0];
-					let latent = arrayify(encoder.run(pixels));
-					currentLatent = latent;
+					currentLatent = arrayify(encoder.run(pixels));
 					velocity.fill(0);
-					drawLatent(currentLatent);
+					blitPixelsToCanvas(pixels, ctx, canvas);
 				}
 
 				alert('Training complete! Model has been tuned on your image.');
