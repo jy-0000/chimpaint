@@ -240,7 +240,7 @@
 				</select>
 				<small id="tileSizeNote">Canvas: 16×16px (256px display)</small>
 			</div>
-			<small>⚠️ Higher resolutions split the image into 16×16 tiles. All tiles animate with a shared latent offset so the image moves coherently.</small>
+			<small>⚠️ Higher resolutions split the image into 16×16 tiles. All tiles animate with a shared latent root so the image moves coherently.</small>
 			<hr style="margin: 15px 0; border: 1px solid rgba(255,255,255,0.2);">
 
 			<div class="tuning-row">
@@ -283,9 +283,12 @@
 		let ctx = canvas.getContext('2d');
 
 		// --- Multi-tile state ---
-		// tileGrid[row][col] = { canvas, ctx, latent, velocity }
+		// tileGrid[row][col] = { canvas, ctx, tileOffset }
+		// NOTE: tiles no longer store their own latent or velocity.
+		// All animation is driven by the single shared currentLatent + velocity.
+		// Each tile's effective latent = currentLatent + tileOffset (read-only at render time).
 		let tileGrid = [];
-		let tileCount = 1; // n×n
+		let tileCount = 1;
 		let multiMode = false;
 		
 		let encoder = new brain.NeuralNetwork({
@@ -299,9 +302,11 @@
 			learningRate:0.03
 		});
 
+		// --- Shared animation state (single source of truth) ---
 		let currentLatent = [];
 		let velocity = new Array(16).fill(0);
 		let targetLatent = null;
+
 		let frameChange = 0.3;
 		let momentum = 0.85;
 		let structureStability = 0.3; 
@@ -325,20 +330,19 @@
 		function updateTileNote() {
 			let n = parseInt($('tileSelect').value);
 			let px = n * 16;
-			let disp = n * 16 * (256 / 16 / n); // always 256 display
 			$('tileSizeNote').textContent = `Canvas: ${px}×${px}px (${256}px display)`;
 		}
 		$('tileSelect').oninput = updateTileNote;
 		updateTileNote();
 
-		// Build the tile grid canvases in the wrapper div
+		// Build the tile grid canvases in the wrapper div.
+		// Tiles store only a frozen tileOffset; all motion lives in currentLatent/velocity.
 		function setupTileGrid(n) {
 			tileCount = n;
 			multiMode = n > 1;
 			let wrapper = $('tileWrapper');
 			wrapper.innerHTML = '';
 
-			// Show/hide appropriate canvas
 			if(multiMode) {
 				$('content').style.display = 'none';
 				wrapper.style.display = 'inline-grid';
@@ -364,46 +368,48 @@
 					tc.style.imageRendering = aliased ? 'initial' : 'pixelated';
 					tc.style.display = 'block';
 					wrapper.appendChild(tc);
-					  // Each tile gets a fixed offset that permanently biases its latent.
-                 // tileOffset is set once here; latent starts at that offset.
-				 let  tileOffsetSpread = 1;
-                 let tileOffset = new Array(16).fill(0).map(() => (Math.random()) / 16);
-let latent = currentLatent.map((v, i) => Math.max(-3.5, Math.min(3.5, v + tileOffset[i])));
-                 tileGrid[row][col] = {
-                     canvas: tc, ctx: tc.getContext('2d'),
-                     latent: latent,
-                     velocity: new Array(16).fill(0),
-                     tileOffset: tileOffset   // ← stored for reference / reset
-                 };
+
+					// Frozen spatial offset — set once, never updated during animation.
+					// Keeps neighbouring tiles visually distinct without independent drift.
+					let tileOffset = new Array(16).fill(0).map(() => (Math.random() - 0.5) / 16);
+
+					tileGrid[row][col] = {
+						canvas: tc,
+						ctx: tc.getContext('2d'),
+						tileOffset: tileOffset
+					};
 				}
 			}
 		}
 
-		// Draw a single tile — pass rawPixels (0..1 flat RGB array) to blit directly,
-		// or omit to decode through the VAE (used during animation).
+		// Draw a tile by decoding (currentLatent + tileOffset).
+		// rawPixels path is kept for the encode/blit workflow.
 		function drawTile(tile, rawPixels) {
-			let imgd = tile.ctx.getImageData(0,0,16,16);
+			let imgd = tile.ctx.getImageData(0, 0, 16, 16);
 			let d = imgd.data;
 			if(rawPixels) {
-				// Direct blit: rawPixels is flat [R,G,B, R,G,B, ...] normalised 0..1
 				let j = 0;
-				for(let i=0;i<rawPixels.length;i+=3){
-					d[j++] = rawPixels[i]*255;
-					d[j++] = rawPixels[i+1]*255;
-					d[j++] = rawPixels[i+2]*255;
+				for(let i = 0; i < rawPixels.length; i += 3){
+					d[j++] = rawPixels[i]   * 255;
+					d[j++] = rawPixels[i+1] * 255;
+					d[j++] = rawPixels[i+2] * 255;
 					d[j++] = 255;
 				}
 			} else {
-				let decoded = arrayify(decoder.run(tile.latent));
+				// Effective latent = shared root + frozen tile offset, clamped.
+				let effectiveLatent = currentLatent.map((v, i) =>
+					Math.max(-3.5, Math.min(3.5, v + tile.tileOffset[i]))
+				);
+				let decoded = arrayify(decoder.run(effectiveLatent));
 				let j = 0;
-				for(let i=0;i<decoded.length;i+=3){
-					d[j++] = decoded[i]*255;
-					d[j++] = decoded[i+1]*255;
-					d[j++] = decoded[i+2]*255;
+				for(let i = 0; i < decoded.length; i += 3){
+					d[j++] = decoded[i]   * 255;
+					d[j++] = decoded[i+1] * 255;
+					d[j++] = decoded[i+2] * 255;
 					d[j++] = 255;
 				}
 			}
-			tile.ctx.putImageData(imgd,0,0);
+			tile.ctx.putImageData(imgd, 0, 0);
 		}
 
 		// ---- Voice setup ----
@@ -463,10 +469,8 @@ let latent = currentLatent.map((v, i) => Math.max(-3.5, Math.min(3.5, v + tileOf
 			ctx.putImageData(newImg,0,0);
 		}
 
-		// Compute a shared acceleration vector for one frame.
-		// Only the stochastic/noise impulse is shared — each tile then integrates
-		// it into its own velocity so the latents stay distinct.
-		function computeSharedAcceleration(refLatent) {
+		// Compute the acceleration for the shared latent root — called once per frame.
+		function computeAcceleration() {
 			let acc = new Array(16).fill(0);
 			noiseOffset += 0.02;
 
@@ -485,8 +489,8 @@ let latent = currentLatent.map((v, i) => Math.max(-3.5, Math.min(3.5, v + tileOf
 						break;
 					case 'directed':
 						if(targetLatent) {
-							// directed uses the calling tile's latent, handled per-tile below
-							a = (Math.random() - 0.5) * frameChange * 0.05 * dimWeight;
+							a = (targetLatent[i] - currentLatent[i]) * 0.08 * dimWeights[i]
+							  + (Math.random() - 0.5) * frameChange * 0.05 * dimWeight;
 						} else {
 							a = (Math.random() - 0.5) * frameChange * 0.1 * dimWeight;
 						}
@@ -501,42 +505,33 @@ let latent = currentLatent.map((v, i) => Math.max(-3.5, Math.min(3.5, v + tileOf
 			return acc;
 		}
 
-		// Apply shared acceleration to one latent+velocity pair in-place.
-		function applyAcceleration(latent, vel, acc, tileOffset) {
-     let maxVel = motionMode === 'unfiltered' ? 0.8 : 0.4;
-     let mom = motionMode === 'unfiltered' ? 0.6 : momentum;
-     for(let i = 0; i < latent.length; i++){
-         let a = acc[i];
-         if(motionMode === 'directed' && targetLatent) {
-             a += (targetLatent[i] - latent[i]) * 0.08 * dimWeights[i];
-         }
-         // Soft spring toward this tile's unique offset — keeps tiles distinct
-         // even during long runs without overriding the animation character.
-         if(tileOffset) {
-             a += (tileOffset[i] - latent[i]) * 0.015 * structureStability;
-         }
-         if(motionMode === 'unfiltered') vel[i] *= 0.6;
-         vel[i] = vel[i] * mom + a;
-       vel[i] = Math.max(-maxVel, Math.min(maxVel, vel[i]));
-       latent[i] += vel[i];
-         latent[i] = Math.max(-3.5, Math.min(3.5, latent[i]));
-     }
- }
+		// Integrate the shared acceleration into currentLatent via velocity — one call per frame.
+		function applyAcceleration(acc) {
+			let maxVel = motionMode === 'unfiltered' ? 0.8 : 0.4;
+			let mom    = motionMode === 'unfiltered' ? 0.6 : momentum;
+
+			for(let i = 0; i < currentLatent.length; i++){
+				if(motionMode === 'unfiltered') velocity[i] *= 0.6;
+				velocity[i] = velocity[i] * mom + acc[i];
+				velocity[i] = Math.max(-maxVel, Math.min(maxVel, velocity[i]));
+				currentLatent[i] += velocity[i];
+				currentLatent[i] = Math.max(-3.5, Math.min(3.5, currentLatent[i]));
+			}
+		}
+
+		// Advance animation by one frame.
+		// The shared latent root moves; each tile reads (root + frozen offset) at draw time.
 		function stepMotion() {
+			let acc = computeAcceleration();
+			applyAcceleration(acc);
+
 			if(multiMode) {
-				// One shared acceleration impulse keeps all tiles in sync stylistically
-				// while each tile integrates into its own velocity — latents stay unique.
-				let acc = computeSharedAcceleration(tileGrid[0][0].latent);
-				for(let row=0; row<tileCount; row++){
-					for(let col=0; col<tileCount; col++){
-						let tile = tileGrid[row][col];
-						 applyAcceleration(tile.latent, tile.velocity, acc, tile.tileOffset);
-						drawTile(tile);
+				for(let row = 0; row < tileCount; row++){
+					for(let col = 0; col < tileCount; col++){
+						drawTile(tileGrid[row][col]);
 					}
 				}
 			} else {
-				let acc = computeSharedAcceleration(currentLatent);
-				 applyAcceleration(currentLatent, velocity, acc, null); // single tile: no offset
 				drawLatent(currentLatent);
 			}
 		}
@@ -549,7 +544,6 @@ let latent = currentLatent.map((v, i) => Math.max(-3.5, Math.min(3.5, v + tileOf
 			if(!multiMode) {
 				return ctx.getImageData(0,0,canvas.width,canvas.height).data;
 			}
-			// Composite onto a temp canvas
 			let n = tileCount;
 			let total = n * 16;
 			let tmp = document.createElement('canvas');
@@ -587,13 +581,11 @@ let latent = currentLatent.map((v, i) => Math.max(-3.5, Math.min(3.5, v + tileOf
 			let frame = 0;
 			let triggeredCues = new Set();
 
-			// Determine frame dimensions
 			let n = tileCount;
 			let framePx = multiMode ? n*16 : 16;
 
 			let draw = () => {
 				if(multiMode) {
-					// Decompose composite frame back into tiles
 					let tmp = document.createElement('canvas');
 					tmp.width = framePx; tmp.height = framePx;
 					let tctx = tmp.getContext('2d');
@@ -666,7 +658,6 @@ let latent = currentLatent.map((v, i) => Math.max(-3.5, Math.min(3.5, v + tileOf
 				let n = parseInt($('tileSelect').value);
 				let img = await loadImageToCanvas(imageUrl);
 
-				// Always draw the full image onto a scratch canvas at n*16 resolution
 				let scratch = document.createElement('canvas');
 				scratch.width = n*16; scratch.height = n*16;
 				let sctx = scratch.getContext('2d');
@@ -674,31 +665,30 @@ let latent = currentLatent.map((v, i) => Math.max(-3.5, Math.min(3.5, v + tileOf
 				let imageData = sctx.getImageData(0, 0, n*16, n*16);
 
 				if(n === 1) {
-					// Single tile: extract pixels, encode, store latent, blit raw pixels to canvas
 					let pixels = extractTilePixels(imageData, 0, 0, 16);
+					// Encode the single tile to set the shared latent root.
 					currentLatent = [...arrayify(encoder.run(pixels))];
 					velocity.fill(0);
 					targetLatent = null;
-					// Blit the raw crop directly so the image shows correctly regardless of VAE quality
 					blitPixelsToCanvas(pixels, ctx, canvas);
 				} else {
-					// Multi-tile: set up the grid of canvases first (does not assign latents)
 					setupTileGrid(n);
-					// Re-extract from scratch (setupTileGrid doesn't touch imageData)
+					// Encode the centre tile (or tile 0,0) as the shared latent root.
+					// All tiles will render as (root + their frozen offset) from this point.
+					let centreRow = Math.floor(n / 2);
+					let centreCol = Math.floor(n / 2);
+					let centrePixels = extractTilePixels(imageData, centreCol, centreRow, n*16);
+					currentLatent = [...arrayify(encoder.run(centrePixels))];
+					velocity.fill(0);
+					targetLatent = null;
+
+					// Blit each tile's raw crop for accurate initial display.
 					for(let row=0; row<n; row++){
 						for(let col=0; col<n; col++){
 							let pixels = extractTilePixels(imageData, col, row, n*16);
-							let tile = tileGrid[row][col];
-							// Each tile gets the latent of its own unique crop
-							tile.latent = [...arrayify(encoder.run(pixels))];
-							tile.velocity.fill(0);
-							// Blit the raw crop pixels directly — no VAE decode needed here
-							blitPixelsToCanvas(pixels, tile.ctx, tile.canvas);
+							blitPixelsToCanvas(pixels, tileGrid[row][col].ctx, tileGrid[row][col].canvas);
 						}
 					}
-					currentLatent = [...tileGrid[0][0].latent];
-					velocity.fill(0);
-					targetLatent = null;
 				}
 			} catch(error) {
 				console.error('Encoding error:', error);
@@ -736,14 +726,12 @@ let latent = currentLatent.map((v, i) => Math.max(-3.5, Math.min(3.5, v + tileOf
 				let n = parseInt($('tileSelect').value);
 				let img = await loadImageToCanvas(imageUrl);
 
-				// Build a scratch canvas at the tile resolution
 				let scratch = document.createElement('canvas');
 				scratch.width = n*16; scratch.height = n*16;
 				let sctx = scratch.getContext('2d');
 				sctx.drawImage(img, 0, 0, n*16, n*16);
 				let imageData = sctx.getImageData(0,0,n*16,n*16);
 
-				// Collect all tile pixel arrays
 				let allTilePixels = [];
 				for(let row=0;row<n;row++){
 					for(let col=0;col<n;col++){
@@ -755,8 +743,6 @@ let latent = currentLatent.map((v, i) => Math.max(-3.5, Math.min(3.5, v + tileOf
 				let encoderIterations = Math.floor(iterations * 0.6);
 				let decoderIterations = iterations - encoderIterations;
 
-				// Phase 1: train encoder — give each tile a distinct spread target
-				// so different crops map to different latent codes.
 				let encoderTraining = allTilePixels.map((pixels, idx) => {
 					let target = new Array(16).fill(0).map((_, d) =>
 						Math.sin((idx + 1) * (d + 1) * 0.7) * 0.8
@@ -771,8 +757,6 @@ let latent = currentLatent.map((v, i) => Math.max(-3.5, Math.min(3.5, v + tileOf
 					log: true, logPeriod: 10
 				});
 
-				// Phase 2: encode each tile to get its learned latent,
-				// then train decoder to reconstruct original pixels from it.
 				let tileLatents = allTilePixels.map(pixels => [...arrayify(encoder.run(pixels))]);
 				let decoderTraining = allTilePixels.map((pixels, idx) => ({
 					input: tileLatents[idx],
@@ -788,27 +772,22 @@ let latent = currentLatent.map((v, i) => Math.max(-3.5, Math.min(3.5, v + tileOf
 
 				console.log('Training complete!');
 
-				// After training: re-encode, store unique per-tile latents,
-				// blit raw source pixels for accurate display.
-				// Animation will decode from tile.latent via decoder.run().
+				// After training: set shared root from centre tile, blit raw crops.
 				if(n > 1) {
 					setupTileGrid(n);
+					let centreRow = Math.floor(n / 2);
+					let centreCol = Math.floor(n / 2);
+					currentLatent = [...arrayify(encoder.run(allTilePixels[centreRow*n + centreCol]))];
+					velocity.fill(0);
 					for(let row=0; row<n; row++){
 						for(let col=0; col<n; col++){
-							let pixels = allTilePixels[row*n + col];
-							let tile = tileGrid[row][col];
-							tile.latent = [...arrayify(encoder.run(pixels))];
-							tile.velocity.fill(0);
-							blitPixelsToCanvas(pixels, tile.ctx, tile.canvas);
+							blitPixelsToCanvas(allTilePixels[row*n+col], tileGrid[row][col].ctx, tileGrid[row][col].canvas);
 						}
 					}
-					currentLatent = [...tileGrid[0][0].latent];
-					velocity.fill(0);
 				} else {
-					let pixels = allTilePixels[0];
-					currentLatent = [...arrayify(encoder.run(pixels))];
+					currentLatent = [...arrayify(encoder.run(allTilePixels[0]))];
 					velocity.fill(0);
-					blitPixelsToCanvas(pixels, ctx, canvas);
+					blitPixelsToCanvas(allTilePixels[0], ctx, canvas);
 				}
 
 				alert('Training complete! Model has been tuned on your image.');
@@ -851,7 +830,6 @@ let latent = currentLatent.map((v, i) => Math.max(-3.5, Math.min(3.5, v + tileOf
 			aliased = !aliased;
 			if(aliased) $('content').style.imageRendering = 'initial';
 			else $('content').style.imageRendering = 'pixelated';
-			// Also update tile canvases
 			for(let row=0;row<tileGrid.length;row++){
 				for(let col=0;col<tileGrid[row].length;col++){
 					tileGrid[row][col].canvas.style.imageRendering = aliased ? 'initial' : 'pixelated';
@@ -868,40 +846,29 @@ let latent = currentLatent.map((v, i) => Math.max(-3.5, Math.min(3.5, v + tileOf
 		$('stopMotion').onclick = () => { stop(); };
 
 		$('seedran').onclick = () => {
+			let latent = [];
+			for(let i=0;i<16;i++) latent.push((Math.random()-0.5)*2);
+			currentLatent = latent;
+			velocity.fill(0);
+			targetLatent = null;
 			if(multiMode) {
-				for(let row=0;row<tileCount;row++){
-					for(let col=0;col<tileCount;col++){
-						let tile = tileGrid[row][col];
-						for(let i=0;i<tile.latent.length;i++) tile.latent[i] = (Math.random()-0.5)*2;
-						tile.velocity.fill(0);
-						drawTile(tile);
-					}
-				}
+				for(let row=0;row<tileCount;row++)
+					for(let col=0;col<tileCount;col++)
+						drawTile(tileGrid[row][col]);
 			} else {
-				let latent = [];
-				for(let i=0;i<16;i++) latent.push((Math.random()-0.5)*2);
-				currentLatent = latent;
-				velocity.fill(0);
-				targetLatent = null;
 				drawLatent(currentLatent);
 			}
 		}
 
 		function setSeedLatent(lat) {
+			currentLatent = [...lat];
+			velocity.fill(0);
+			targetLatent = null;
 			if(multiMode) {
-				// Offset each tile slightly from the seed so they differ but share the same style
-				for(let row=0;row<tileCount;row++){
-					for(let col=0;col<tileCount;col++){
-						let tile = tileGrid[row][col];
-						tile.latent = lat.map(v => Math.max(-3.5, Math.min(3.5, v + (Math.random()-0.5)*0.3)));
-						tile.velocity.fill(0);
-						drawTile(tile);
-					}
-				}
+				for(let row=0;row<tileCount;row++)
+					for(let col=0;col<tileCount;col++)
+						drawTile(tileGrid[row][col]);
 			} else {
-				currentLatent = [...lat];
-				velocity.fill(0);
-				targetLatent = null;
 				drawLatent(currentLatent);
 			}
 		}
