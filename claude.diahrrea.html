@@ -504,25 +504,25 @@
 
 		// Apply shared acceleration to one latent+velocity pair in-place.
 		function applyAcceleration(latent, vel, acc, tileOffset) {
-+     let maxVel = motionMode === 'unfiltered' ? 0.8 : 0.4;
-+     let mom = motionMode === 'unfiltered' ? 0.6 : momentum;
-+     for(let i = 0; i < latent.length; i++){
-+         let a = acc[i];
-+         if(motionMode === 'directed' && targetLatent) {
-+             a += (targetLatent[i] - latent[i]) * 0.08 * dimWeights[i];
-+         }
-+         // Soft spring toward this tile's unique offset — keeps tiles distinct
-+         // even during long runs without overriding the animation character.
-+         if(tileOffset) {
-+             a += (tileOffset[i] - latent[i]) * 0.015 * structureStability;
-+         }
-+         if(motionMode === 'unfiltered') vel[i] *= 0.6;
-+         vel[i] = vel[i] * mom + a;
-+         vel[i] = Math.max(-maxVel, Math.min(maxVel, vel[i]));
-+         latent[i] += vel[i];
-+         latent[i] = Math.max(-3.5, Math.min(3.5, latent[i]));
-+     }
-+ }
+     let maxVel = motionMode === 'unfiltered' ? 0.8 : 0.4;
+     let mom = motionMode === 'unfiltered' ? 0.6 : momentum;
+     for(let i = 0; i < latent.length; i++){
+         let a = acc[i];
+         if(motionMode === 'directed' && targetLatent) {
+             a += (targetLatent[i] - latent[i]) * 0.08 * dimWeights[i];
+         }
+         // Soft spring toward this tile's unique offset — keeps tiles distinct
+         // even during long runs without overriding the animation character.
+         if(tileOffset) {
+             a += (tileOffset[i] - latent[i]) * 0.015 * structureStability;
+         }
+         if(motionMode === 'unfiltered') vel[i] *= 0.6;
+         vel[i] = vel[i] * mom + a;
+       vel[i] = Math.max(-maxVel, Math.min(maxVel, vel[i]));
+       latent[i] += vel[i];
+         latent[i] = Math.max(-3.5, Math.min(3.5, latent[i]));
+     }
+ }
 		function stepMotion() {
 			if(multiMode) {
 				// One shared acceleration impulse keeps all tiles in sync stylistically
