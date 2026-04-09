@@ -673,7 +673,7 @@
 				if(n === 1) {
 					// Single tile: extract pixels, encode, store latent, blit raw pixels to canvas
 					let pixels = extractTilePixels(imageData, 0, 0, 16);
-					currentLatent = arrayify(encoder.run(pixels));
+					currentLatent = [...arrayify(encoder.run(pixels))];
 					velocity.fill(0);
 					targetLatent = null;
 					// Blit the raw crop directly so the image shows correctly regardless of VAE quality
@@ -687,7 +687,7 @@
 							let pixels = extractTilePixels(imageData, col, row, n*16);
 							let tile = tileGrid[row][col];
 							// Each tile gets the latent of its own unique crop
-							tile.latent = arrayify(encoder.run(pixels));
+							tile.latent = [...arrayify(encoder.run(pixels))];
 							tile.velocity.fill(0);
 							// Blit the raw crop pixels directly — no VAE decode needed here
 							blitPixelsToCanvas(pixels, tile.ctx, tile.canvas);
@@ -770,7 +770,7 @@
 
 				// Phase 2: encode each tile to get its learned latent,
 				// then train decoder to reconstruct original pixels from it.
-				let tileLatents = allTilePixels.map(pixels => arrayify(encoder.run(pixels)));
+				let tileLatents = allTilePixels.map(pixels => [...arrayify(encoder.run(pixels))]);
 				let decoderTraining = allTilePixels.map((pixels, idx) => ({
 					input: tileLatents[idx],
 					output: pixels
@@ -794,7 +794,7 @@
 						for(let col=0; col<n; col++){
 							let pixels = allTilePixels[row*n + col];
 							let tile = tileGrid[row][col];
-							tile.latent = arrayify(encoder.run(pixels));
+							tile.latent = [...arrayify(encoder.run(pixels))];
 							tile.velocity.fill(0);
 							blitPixelsToCanvas(pixels, tile.ctx, tile.canvas);
 						}
@@ -803,7 +803,7 @@
 					velocity.fill(0);
 				} else {
 					let pixels = allTilePixels[0];
-					currentLatent = arrayify(encoder.run(pixels));
+					currentLatent = [...arrayify(encoder.run(pixels))];
 					velocity.fill(0);
 					blitPixelsToCanvas(pixels, ctx, canvas);
 				}
