@@ -366,6 +366,7 @@
 					wrapper.appendChild(tc);
 					  // Each tile gets a fixed offset that permanently biases its latent.
                  // tileOffset is set once here; latent starts at that offset.
+				 let  tileOffsetSpread = 1;
                  let tileOffset = new Array(16).fill(0).map(() =>
                      (Math.random() - 0.5) * 2 * tileOffsetSpread
                  );
