@@ -364,14 +364,18 @@
 					tc.style.imageRendering = aliased ? 'initial' : 'pixelated';
 					tc.style.display = 'block';
 					wrapper.appendChild(tc);
-					let latent = [];
-					for(let i=0;i<16;i++) latent.push((Math.random()-0.5)*2);
-					tileGrid[row][col] = {
-						canvas: tc,
-						ctx: tc.getContext('2d'),
-						latent: latent,
-						velocity: new Array(16).fill(0)
-					};
+					  // Each tile gets a fixed offset that permanently biases its latent.
+                 // tileOffset is set once here; latent starts at that offset.
+                 let tileOffset = new Array(16).fill(0).map(() =>
+                     (Math.random() - 0.5) * 2 * tileOffsetSpread
+                 );
+                 let latent = tileOffset.map(v => Math.max(-3.5, Math.min(3.5, v)));
+                 tileGrid[row][col] = {
+                     canvas: tc, ctx: tc.getContext('2d'),
+                     latent: latent,
+                     velocity: new Array(16).fill(0),
+                     tileOffset: tileOffset   // ← stored for reference / reset
+                 };
 				}
 			}
 		}
@@ -499,26 +503,26 @@
 		}
 
 		// Apply shared acceleration to one latent+velocity pair in-place.
-		function applyAcceleration(latent, vel, acc) {
-			let maxVel = motionMode === 'unfiltered' ? 0.8 : 0.4;
-			let mom = motionMode === 'unfiltered' ? 0.6 : momentum;
-
-			for(let i = 0; i < latent.length; i++){
-				let a = acc[i];
-
-				// directed mode adds a per-tile pull toward targetLatent
-				if(motionMode === 'directed' && targetLatent) {
-					a += (targetLatent[i] - latent[i]) * 0.08 * dimWeights[i];
-				}
-				if(motionMode === 'unfiltered') vel[i] *= 0.6;
-
-				vel[i] = vel[i] * mom + a;
-				vel[i] = Math.max(-maxVel, Math.min(maxVel, vel[i]));
-				latent[i] += vel[i];
-				latent[i] = Math.max(-3.5, Math.min(3.5, latent[i]));
-			}
-		}
-
+		function applyAcceleration(latent, vel, acc, tileOffset) {
++     let maxVel = motionMode === 'unfiltered' ? 0.8 : 0.4;
++     let mom = motionMode === 'unfiltered' ? 0.6 : momentum;
++     for(let i = 0; i < latent.length; i++){
++         let a = acc[i];
++         if(motionMode === 'directed' && targetLatent) {
++             a += (targetLatent[i] - latent[i]) * 0.08 * dimWeights[i];
++         }
++         // Soft spring toward this tile's unique offset — keeps tiles distinct
++         // even during long runs without overriding the animation character.
++         if(tileOffset) {
++             a += (tileOffset[i] - latent[i]) * 0.015 * structureStability;
++         }
++         if(motionMode === 'unfiltered') vel[i] *= 0.6;
++         vel[i] = vel[i] * mom + a;
++         vel[i] = Math.max(-maxVel, Math.min(maxVel, vel[i]));
++         latent[i] += vel[i];
++         latent[i] = Math.max(-3.5, Math.min(3.5, latent[i]));
++     }
++ }
 		function stepMotion() {
 			if(multiMode) {
 				// One shared acceleration impulse keeps all tiles in sync stylistically
@@ -527,13 +531,13 @@
 				for(let row=0; row<tileCount; row++){
 					for(let col=0; col<tileCount; col++){
 						let tile = tileGrid[row][col];
-						applyAcceleration(tile.latent, tile.velocity, acc);
+						 applyAcceleration(tile.latent, tile.velocity, acc, tile.tileOffset);
 						drawTile(tile);
 					}
 				}
 			} else {
 				let acc = computeSharedAcceleration(currentLatent);
-				applyAcceleration(currentLatent, velocity, acc);
+				 applyAcceleration(currentLatent, velocity, acc, null); // single tile: no offset
 				drawLatent(currentLatent);
 			}
 		}
