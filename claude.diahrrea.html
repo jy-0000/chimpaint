@@ -460,78 +460,80 @@
 			ctx.putImageData(newImg,0,0);
 		}
 
-		// Compute a shared delta vector for one frame, given a reference latent + velocity
-		// Returns { deltaLatent, newVelocity }
-		function computeSharedDelta(refLatent, refVelocity) {
-			let newVelocity = [...refVelocity];
-			let delta = new Array(16).fill(0);
+		// Compute a shared acceleration vector for one frame.
+		// Only the stochastic/noise impulse is shared — each tile then integrates
+		// it into its own velocity so the latents stay distinct.
+		function computeSharedAcceleration(refLatent) {
+			let acc = new Array(16).fill(0);
 			noiseOffset += 0.02;
 
-			for(let i = 0; i < refLatent.length; i++){
-				let acceleration = 0;
+			for(let i = 0; i < 16; i++){
+				let a = 0;
 				let dimWeight = dimWeights[i];
 				let stabilityFactor = i < 4 ? structureStability : 0;
 
 				switch(motionMode) {
 					case 'smooth':
-						acceleration = (Math.random() - 0.5) * frameChange * 0.15 * dimWeight;
+						a = (Math.random() - 0.5) * frameChange * 0.15 * dimWeight;
 						break;
 					case 'organic':
 						let noiseVal = noise1D(i * 0.5 + noiseOffset) * 2 - 1;
-						acceleration = noiseVal * frameChange * 0.2 * dimWeight;
+						a = noiseVal * frameChange * 0.2 * dimWeight;
 						break;
 					case 'directed':
 						if(targetLatent) {
-							let diff = targetLatent[i] - refLatent[i];
-							acceleration = diff * 0.08 * dimWeight;
-							acceleration += (Math.random() - 0.5) * frameChange * 0.05;
+							// directed uses the calling tile's latent, handled per-tile below
+							a = (Math.random() - 0.5) * frameChange * 0.05 * dimWeight;
 						} else {
-							acceleration = (Math.random() - 0.5) * frameChange * 0.1 * dimWeight;
+							a = (Math.random() - 0.5) * frameChange * 0.1 * dimWeight;
 						}
 						break;
 					case 'unfiltered':
-						acceleration = (Math.random() - 0.5) * frameChange * 0.4 * dimWeight;
-						newVelocity[i] *= 0.6;
+						a = (Math.random() - 0.5) * frameChange * 0.4 * dimWeight;
 						break;
 				}
 
-				acceleration *= (1.0 - stabilityFactor);
-				let currentMomentum = motionMode === 'unfiltered' ? 0.6 : momentum;
-				newVelocity[i] = newVelocity[i] * currentMomentum + acceleration;
-				let maxVel = motionMode === 'unfiltered' ? 0.8 : 0.4;
-				newVelocity[i] = Math.max(-maxVel, Math.min(maxVel, newVelocity[i]));
-				delta[i] = newVelocity[i];
+				acc[i] = a * (1.0 - stabilityFactor);
 			}
-			return { delta, newVelocity };
+			return acc;
+		}
+
+		// Apply shared acceleration to one latent+velocity pair in-place.
+		function applyAcceleration(latent, vel, acc) {
+			let maxVel = motionMode === 'unfiltered' ? 0.8 : 0.4;
+			let mom = motionMode === 'unfiltered' ? 0.6 : momentum;
+
+			for(let i = 0; i < latent.length; i++){
+				let a = acc[i];
+
+				// directed mode adds a per-tile pull toward targetLatent
+				if(motionMode === 'directed' && targetLatent) {
+					a += (targetLatent[i] - latent[i]) * 0.08 * dimWeights[i];
+				}
+				if(motionMode === 'unfiltered') vel[i] *= 0.6;
+
+				vel[i] = vel[i] * mom + a;
+				vel[i] = Math.max(-maxVel, Math.min(maxVel, vel[i]));
+				latent[i] += vel[i];
+				latent[i] = Math.max(-3.5, Math.min(3.5, latent[i]));
+			}
 		}
 
 		function stepMotion() {
 			if(multiMode) {
-				// Compute ONE shared delta from the first tile's latent/velocity
-				let ref = tileGrid[0][0];
-				let { delta, newVelocity } = computeSharedDelta(ref.latent, ref.velocity);
-
-				// Apply same delta offset to every tile
+				// One shared acceleration impulse keeps all tiles in sync stylistically
+				// while each tile integrates into its own velocity — latents stay unique.
+				let acc = computeSharedAcceleration(tileGrid[0][0].latent);
 				for(let row=0; row<tileCount; row++){
 					for(let col=0; col<tileCount; col++){
 						let tile = tileGrid[row][col];
-						// Give the shared velocity to tile[0][0]
-						if(row===0 && col===0) tile.velocity = newVelocity;
-						for(let i=0;i<tile.latent.length;i++){
-							tile.latent[i] += delta[i];
-							tile.latent[i] = Math.max(-3.5, Math.min(3.5, tile.latent[i]));
-						}
+						applyAcceleration(tile.latent, tile.velocity, acc);
 						drawTile(tile);
 					}
 				}
 			} else {
-				// Original single-tile path
-				let { delta, newVelocity } = computeSharedDelta(currentLatent, velocity);
-				for(let i=0;i<currentLatent.length;i++){
-					velocity[i] = newVelocity[i];
-					currentLatent[i] += delta[i];
-					currentLatent[i] = Math.max(-3.5, Math.min(3.5, currentLatent[i]));
-				}
+				let acc = computeSharedAcceleration(currentLatent);
+				applyAcceleration(currentLatent, velocity, acc);
 				drawLatent(currentLatent);
 			}
 		}
