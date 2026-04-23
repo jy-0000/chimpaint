@@ -121,6 +121,7 @@
 	<div class="menu">
 		<img src="./src/logo.png" width="200" height="auto">
 	</div>
+	<canvas id="overlayWork" width="256" height="256" style="display:none;"></canvas>
 	<canvas id="theVoices" width="16" height="16"></canvas>
 	<div style="position:relative;display:inline-block;">
 		<canvas id="content" width="16" height="16" style="width:256px;height:256px;"></canvas>
@@ -302,49 +303,49 @@
 		let overlayCurrentAlpha = 0; // current rendered alpha [0..1]
 		let overlayTargetAlpha = 0;  // alpha we're fading toward
 		let texturingParam = 0.0;    // controlled by the Texturing slider
+		let overlayWorkCanvas = $('overlayWork');
+		let overlayWorkCtx = overlayWorkCanvas.getContext('2d');
 
 		/** Extract texture detail: keep dark pixels, fade whites to transparent */
 		function buildTextureData(sourceImg) {
-			let tmp = document.createElement('canvas');
-			tmp.width = 256; tmp.height = 256;
-			let tmpCtx = tmp.getContext('2d');
-			// Draw source at full res with high-contrast greyscale treatment
-			tmpCtx.filter = 'brightness(1.3) contrast(3) saturate(0) blur(1px)';
-			tmpCtx.drawImage(sourceImg, 0, 0, 256, 256);
-			tmpCtx.filter = 'none';
+	overlayWorkCtx.clearRect(0, 0, 256, 256);
 
-			let data = tmpCtx.getImageData(0, 0, 256, 256);
-			let d = data.data;
-			for (let i = 0; i < d.length; i += 4) {
-				let luma = (d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114) / 255; // 0=black,1=white
-				// Dark pixels → opaque dark; light pixels → transparent
-				let darkness = 1.0 - luma;          // how dark [0..1]
-				let alpha = Math.pow(darkness, 1.8); // steepen the falloff
-				d[i]   = 0;
-				d[i+1] = 0;
-				d[i+2] = 0;
-				d[i+3] = Math.round(alpha * 255);
-			}
-			return data;
-		}
+	overlayWorkCtx.filter = 'brightness(1.3) contrast(3) saturate(0) blur(1px)';
+	overlayWorkCtx.drawImage(sourceImg, 0, 0, 256, 256);
+	overlayWorkCtx.filter = 'none';
+
+	let data = overlayWorkCtx.getImageData(0, 0, 256, 256);
+	let d = data.data;
+
+	for (let i = 0; i < d.length; i += 4) {
+		let luma = (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114) / 255;
+		let darkness = 1.0 - luma;
+		let alpha = Math.pow(darkness, 1.8);
+
+		d[i] = 0;
+		d[i+1] = 0;
+		d[i+2] = 0;
+		d[i+3] = Math.round(alpha * 255);
+	}
+	return data;
+}
 
 		/** Render the overlay canvas at a given alpha (0..1), blended with texturingParam */
 		function renderOverlay(alpha) {
-			overlayCtx.clearRect(0, 0, 256, 256);
-			if (!activeOverlayId || alpha <= 0) return;
-			let entry = overlayAtlas.find(o => o.id === activeOverlayId);
-			if (!entry) return;
+	overlayCtx.clearRect(0, 0, 256, 256);
+	if (!activeOverlayId || alpha <= 0) return;
 
-			// Put the pre-built texture data into an offscreen canvas
-			let tmp = document.createElement('canvas');
-			tmp.width = 256; tmp.height = 256;
-			tmp.getContext('2d').putImageData(entry.textureData, 0, 0);
+	let entry = overlayAtlas.find(o => o.id === activeOverlayId);
+	if (!entry) return;
 
-			let effectiveAlpha = Math.min(1, alpha * (texturingParam > 0 ? texturingParam : 0));
-			overlayCtx.globalAlpha = effectiveAlpha;
-			overlayCtx.drawImage(tmp, 0, 0);
-			overlayCtx.globalAlpha = 1;
-		}
+	// reuse working canvas
+	overlayWorkCtx.putImageData(entry.textureData, 0, 0);
+
+	let effectiveAlpha = Math.min(1, alpha * texturingParam);
+	overlayCtx.globalAlpha = effectiveAlpha;
+	overlayCtx.drawImage(overlayWorkCanvas, 0, 0);
+	overlayCtx.globalAlpha = 1;
+}
 
 		/** Smoothly animate overlay alpha toward target */
 		function animateOverlay() {
@@ -421,21 +422,31 @@
 
 		/** Transfer current canvas content to the active overlay (for tuning/drawing sync) */
 		function syncCanvasToOverlay() {
-			if (!activeOverlayId) return;
-			let entry = overlayAtlas.find(o => o.id === activeOverlayId);
-			if (!entry) return;
-			// Build texture from the current main canvas content
-			let tmp = document.createElement('canvas');
-			tmp.width = 256; tmp.height = 256;
-			let tmpCtx = tmp.getContext('2d');
-			tmpCtx.drawImage(canvas, 0, 0, 256, 256);
-			let syntheticImg = new Image();
-			syntheticImg.onload = () => {
-				entry.textureData = buildTextureData(syntheticImg);
-				renderOverlay(overlayCurrentAlpha);
-			};
-			syntheticImg.src = tmp.toDataURL();
-		}
+	if (!activeOverlayId) return;
+	let entry = overlayAtlas.find(o => o.id === activeOverlayId);
+	if (!entry) return;
+
+	overlayWorkCtx.clearRect(0, 0, 256, 256);
+	overlayWorkCtx.drawImage(canvas, 0, 0, 256, 256);
+
+	let data = overlayWorkCtx.getImageData(0, 0, 256, 256);
+
+	// reuse processing logic directly (avoid re-encoding via Image())
+	let d = data.data;
+	for (let i = 0; i < d.length; i += 4) {
+		let luma = (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114) / 255;
+		let darkness = 1.0 - luma;
+		let alpha = Math.pow(darkness, 1.8);
+
+		d[i] = 0;
+		d[i+1] = 0;
+		d[i+2] = 0;
+		d[i+3] = Math.round(alpha * 255);
+	}
+
+	entry.textureData = data;
+	renderOverlay(overlayCurrentAlpha);
+}
 
 		function updateOverlayAtlasUI() {
 			let list = $('overlayAtlasList');
