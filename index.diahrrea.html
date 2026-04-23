@@ -1,0 +1,923 @@
+<!DOCTYPE html><html>
+<head>
+	<title>Chimpaint! Beta</title>
+	<style>
+		html {
+   			width: 100%;
+    		height: 100%;
+    		padding: 0;
+    		margin: 0;
+		}
+		body {
+    width: 100%;
+    height: 100%;
+    background: #b5b5b5;
+    color: white;
+    text-shadow: 2px 2px 2px rgba(0,0,0,0.4);
+    background: linear-gradient(0deg, rgba(181, 181, 181, 1) 0%, rgba(0, 0, 0, 1) 100%);
+    background-size: 150% 120%;
+    background-attachment: fixed;
+    background-repeat: no-repeat;
+}
+		.controls { margin: 10px 0; }
+		.control-group { margin: 8px 0; display: flex; align-items: center; gap: 10px; }
+		.control-group label { min-width: 180px; }
+		button { padding: 8px 12px; margin: 4px; cursor: pointer; }
+		
+		#canvas-container {
+			position: relative;
+			display: inline-block;
+			border: 2px solid #333;
+		}
+		
+		#content, #textureOverlay {
+			position: absolute;
+			top: 0;
+			left: 0;
+			image-rendering: pixelated;
+		}
+		
+		#content {
+			z-index: 1;
+		}
+		
+		#textureOverlay {
+			z-index: 2;
+			pointer-events: none;
+		}
+		
+		.section {
+			margin: 20px 0; padding: 15px; border:1px solid black;border-radius: 4px; 
+    		background: linear-gradient(0deg,rgba(171, 205, 217, 1) 0%, rgba(143, 159, 161, 1) 13%, rgba(109, 130, 130, 1) 23%, rgba(93, 108, 115, 1) 34%, rgba(157, 172, 181, 1) 84%, rgba(230, 237, 237, 1) 100%);
+    		background-size: cover;
+    		background-repeat: no-repeat;
+		}
+		.playback-controls { display: flex; gap: 10px; align-items: center; }
+		#theVoices {
+			visibility:hidden;
+		}
+		.menu {
+			display:flex;
+			gap:10px;
+			width:100%;
+			height:200px;
+			padding:5px;
+		}
+		.tuning-controls { display: flex; flex-direction: column; gap: 10px; }
+		.tuning-row { display: flex; gap: 10px; align-items: center; }
+		#tuneImageUrl { flex: 1; padding: 8px; }
+		#encodeImageUrl { flex: 1; padding: 8px; }
+		#tuneIterations { width: 100px; padding: 8px; }
+		#tuneButton { padding: 8px 12px; }
+		#encodeButton { padding: 8px 12px; }
+		#tuneButton:disabled { opacity: 0.5; cursor: not-allowed; }
+		#encodeButton:disabled { opacity: 0.5; cursor: not-allowed; }
+		.modal {
+			display: none;
+			position: fixed;
+			z-index: 1000;
+			left: 0;
+			top: 0;
+			width: 100%;
+			height: 100%;
+			background-color: rgba(0,0,0,0.7);
+		}
+		.modal-content {
+			background: linear-gradient(0deg,rgba(171, 205, 217, 1) 0%, rgba(143, 159, 161, 1) 13%, rgba(109, 130, 130, 1) 23%, rgba(93, 108, 115, 1) 34%, rgba(157, 172, 181, 1) 84%, rgba(230, 237, 237, 1) 100%);
+			margin: 10% auto;
+			padding: 20px;
+			border: 2px solid #333;
+			border-radius: 8px;
+			width: 500px;
+			max-width: 90%;
+		}
+		.modal-content h3 {
+			margin-top: 0;
+		}
+		.modal-content textarea {
+			width: 100%;
+			height: 80px;
+			padding: 8px;
+			margin: 10px 0;
+			box-sizing: border-box;
+		}
+		.modal-content select {
+			width: 100%;
+			padding: 8px;
+			margin: 10px 0;
+		}
+		.modal-buttons {
+			display: flex;
+			gap: 10px;
+			justify-content: flex-end;
+			margin-top: 15px;
+		}
+		.tts-cue-list {
+			margin-top: 15px;
+			max-height: 200px;
+			overflow-y: auto;
+			border: 1px solid rgba(0,0,0,0.3);
+			padding: 10px;
+			background: rgba(255,255,255,0.1);
+			border-radius: 4px;
+		}
+		.tts-cue-item {
+			padding: 8px;
+			margin: 5px 0;
+			background: rgba(255,255,255,0.2);
+			border-radius: 4px;
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+		}
+		.tts-cue-item button {
+			padding: 4px 8px;
+			margin: 0;
+		}
+		
+		.texture-section {
+			background: linear-gradient(0deg,rgba(140, 180, 200, 1) 0%, rgba(120, 140, 160, 1) 100%);
+		}
+	</style>
+</head>
+<body>
+	<script src="latent_shapes.js"></script>
+	<script src="monky_model.js"></script>
+    <script src="https://unpkg.com/brain.js"></script>
+	<div class="menu">
+		<img src="./src/logo.png" width="200" height="auto">
+	</div>
+	<canvas id="theVoices" width="16" height="16"></canvas>
+	
+	<div id="canvas-container">
+		<canvas id="content" width="16" height="16" style="width:256px;height:256px;"></canvas>
+		<canvas id="textureOverlay" width="16" height="16" style="width:256px;height:256px;"></canvas>
+	</div>
+	
+	Anti Alias <input type="checkbox" id="antialias">
+	<br>
+	<button id="scene_start">🎞️</button>
+	<button id="scene_end">🟥</button>
+	<button id="scene_trash">🗑️</button>
+	||
+	<button id="scene_tts">💬</button>
+	<br>
+	<p id="framecount"></p>
+	
+	<div id="ttsModal" class="modal">
+		<div class="modal-content">
+			<h3>Add TTS Dialogue</h3>
+			<label>Text to Speak:</label>
+			<textarea id="ttsText" placeholder="Enter dialogue here..."></textarea>
+			<label>Voice:</label>
+			<select id="ttsVoice">
+				<option value="">Default</option>
+			</select>
+			<label>Frame: <span id="ttsFrameDisplay">0</span></label>
+			<div class="modal-buttons">
+				<button id="ttsCancel">Cancel</button>
+				<button id="ttsAdd">Add Cue</button>
+			</div>
+			<div class="tts-cue-list">
+				<strong>TTS Cues:</strong>
+				<div id="ttsCueList"></div>
+			</div>
+		</div>
+	</div>
+
+	<div class="section">
+		<h3>Motion</h3>
+		<div class="controls">
+			<div class="control-group">
+				<label>Intensity: <span id="shiftVal">0.3</span></label>
+				<input type="range" min="0.01" max="0.25" step="0.01" id="shift" value="0.3">
+			</div>
+			<div class="control-group">
+				<label>Smoothness: <span id="momentumVal">0.85</span></label>
+				<input type="range" min="0.5" max="0.98" step="0.01" id="momentum" value="0.85">
+			</div>
+			<div class="control-group">
+				<label>Stability: <span id="structureVal">0.3</span></label>
+				<input type="range" min="0.0" max="1.0" step="0.05" id="structure" value="0.3">
+			</div>
+		</div>
+	</div>
+
+	<div class="section texture-section">
+		<h3>Texture</h3>
+		<div class="controls">
+			<div class="control-group">
+				<label>Texturing: <span id="texturingVal">0.0</span></label>
+				<input type="range" min="-1.0" max="1.0" step="0.05" id="texturing" value="0.0">
+			</div>
+			<div class="control-group">
+				<label>Texture URL (Image):</label>
+				<input type="text" id="textureImageUrl" placeholder="Enter image URL for texture overlay">
+				<button id="addTextureButton">Add Texture</button>
+			</div>
+			<small>⚠️ Textures are applied as grayscale detail overlays. Darker pixels provide more texture detail. Texture opacity is controlled by the Texturing parameter.</small>
+		</div>
+	</div>
+
+	<div class="section">
+		<h3>Playback</h3>
+		<div class="playback-controls">
+			<button id="playMotion">▶ </button>
+			<button id="stopMotion">⏸ </button>
+			<button id="seedshift">→ Step</button>
+			||
+			<button id="scene_play">🎞️</button>
+			<label>FPS: <span id="fpsVal">24</span></label>
+			<input type="range" min="6" max="60" step="6" id="fps" value="24">
+		</div>
+	</div>
+
+	
+	<div class="section">
+		<h3>Modes</h3>
+		<button id="modeSmooth">Smooth</button>
+		<button id="modeOrganic">Organic</button>
+		<button id="modeDirected">Directed</button>
+		<button id="modeUnfiltered">Unfiltered</button>
+		<div style="margin-top: 10px;">
+			<small>Current Mode: <strong id="currentMode">Smooth</strong></small>
+		</div>
+	</div>
+	
+	<div class="section" style="display:none;">
+		<h3>Seeds</h3>
+		<button id="seedran">🎲 </button>
+		<button id="seedtroll">Troll</button>
+		<button id="seedbnrj">Jon Mud BNRJ</button>
+		<button id="seedbia">Bia 1</button>
+		<button id="seedmsn">MSN 1</button>
+		<button id="seedsmiley">Smiley Icon</button>
+		<button id="seedface1">Face 1</button>
+	</div>
+	
+	<div class="section">
+		<h3>VAE Operations</h3>
+		<div class="tuning-controls">
+			<div class="tuning-row">
+				<label>Image URL (Display):</label>
+				<input type="text" id="encodeImageUrl" placeholder="Enter image URL to encode and display">
+				<button id="encodeButton">Encode & Display</button>
+			</div>
+			<small>⚠️ Encodes image through VAE and displays reconstruction on canvas. Its recommended you train the model on the image first.</small>
+			<hr style="margin: 15px 0; border: 1px solid rgba(255,255,255,0.2);">
+			<div class="tuning-row">
+				<label>Image URL (Train):</label>
+				<input type="text" id="tuneImageUrl" placeholder="Enter image URL to train model">
+			</div>
+			<div class="tuning-row">
+				<label>Iterations:</label>
+				<input type="number" id="tuneIterations" value="100" min="10" max="10000" step="10">
+				<button id="tuneButton">Train Model</button>
+			</div>
+			<small>⚠️ Training will freeze the UI. Open devtools console (F12) to see progress.</small>
+		</div>
+	</div>
+
+	<script defer>
+		function $(a){return document.getElementById(a);}
+		function arrayify(netOut){
+			let netOuts = Object.keys(netOut);
+			let result = [];
+			for(let i=0;i<netOuts.length;i++){
+				result.push(netOut[netOuts[i]]);
+			}
+			return result;
+		}
+        let frames = [];
+		let ttsCues = [];
+		let availableVoices = [];
+		let canvas = $('content');
+		let ctx = canvas.getContext('2d');
+		let textureCanvas = $('textureOverlay');
+		let textureCtx = textureCanvas.getContext('2d');
+		
+		let encoder = new brain.NeuralNetwork({
+			hiddenLayers: [Math.floor(768 / 2), 16],
+			activation: 'tanh',
+			learningRate:0.005
+		});
+		let decoder = new brain.NeuralNetwork({
+			hiddenLayers: [16, Math.floor(768 / 2)],
+			activation: 'sigmoid',
+			learningRate:0.03
+		});
+
+		// Texture overlay system
+		let textureAtlas = new Map(); // Maps latent hash to texture data
+		let currentTextureOpacity = 0;
+		let targetTextureOpacity = 0;
+		let texturingParameter = 0;
+		let activeTextureUrl = null;
+
+		let currentLatent = [];
+		let velocity = new Array(16).fill(0);
+		let targetLatent = null;
+		let frameChange = 0.3;
+		let momentum = 0.85;
+		let structureStability = 0.3; 
+		let motionMode = 'smooth';
+		let isPlaying = false;
+		let animationId = null;
+		let fps = 24;
+		let noiseOffset = 0;
+
+
+		let dimWeights = [
+			0.2, 0.2, 0.3, 0.2,
+			0.5, 0.5, 0.6, 0.6,
+			0.5, 0.5, 0.5, 0.5,
+			0.7, 0.7, 0.7, 0.7
+		];
+		
+		function hashLatent(latent) {
+			return latent.map(v => v.toFixed(3)).join(',');
+		}
+
+		function createTextureFromImage(imageUrl) {
+			return new Promise((resolve, reject) => {
+				let img = new Image();
+				img.crossOrigin = 'anonymous';
+				
+				img.onload = () => {
+					let tempCanvas = $('theVoices');
+					let tempCtx = tempCanvas.getContext('2d');
+					tempCtx.drawImage(img, 0, 0, 16, 16);
+					
+					let imageData = tempCtx.getImageData(0, 0, 16, 16);
+					let pixels = imageData.data;
+					
+					// Create texture: convert to grayscale and enhance contrast
+					let textureData = new Uint8ClampedArray(16 * 16 * 4);
+					for (let i = 0; i < pixels.length; i += 4) {
+						// Grayscale conversion
+						let gray = pixels[i] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + 2] * 0.114;
+						
+						// High contrast enhancement
+						gray = gray < 128 ? gray * 0.7 : 128 + (gray - 128) * 1.5;
+						gray = Math.max(0, Math.min(255, gray));
+						
+						// Apply blur via pre-processing
+						textureData[i] = gray;
+						textureData[i + 1] = gray;
+						textureData[i + 2] = gray;
+						textureData[i + 3] = 255; // Opaque initially
+					}
+					
+					// Create canvas with texture
+					let textureCanvas = document.createElement('canvas');
+					textureCanvas.width = 16;
+					textureCanvas.height = 16;
+					let tctx = textureCanvas.getContext('2d');
+					let tdata = tctx.createImageData(16, 16);
+					tdata.data.set(textureData);
+					tctx.putImageData(tdata, 0, 0);
+					
+					resolve(textureCanvas);
+				};
+				
+				img.onerror = () => reject(new Error('Failed to load texture image'));
+				img.src = imageUrl;
+			});
+		}
+
+		function renderTextureOverlay(textureCanvas, opacity) {
+			textureCtx.clearRect(0, 0, textureCanvas.width, textureCanvas.height);
+			
+			if (!textureCanvas || opacity <= 0) return;
+			
+			// Draw the texture with fading alpha based on brightness
+			let imageData = textureCtx.getImageData(0, 0, 16, 16);
+			let pixels = imageData.data;
+			
+			let texData = textureCtx.createImageData(16, 16);
+			let tempCanvasCtx = textureCanvas.getContext('2d');
+			let tempImageData = tempCanvasCtx.getImageData(0, 0, 16, 16);
+			let tempPixels = tempImageData.data;
+			
+			for (let i = 0; i < pixels.length; i += 4) {
+				let gray = tempPixels[i]; // Grayscale value
+				
+				// Darker pixels get more opacity
+				let pixelOpacity = (255 - gray) / 255;
+				let finalAlpha = pixelOpacity * opacity * 255;
+				
+				texData.data[i] = 0;
+				texData.data[i + 1] = 0;
+				texData.data[i + 2] = 0;
+				texData.data[i + 3] = finalAlpha;
+			}
+			
+			textureCtx.putImageData(texData, 0, 0);
+		}
+
+		function updateTextureForLatent(latent) {
+			let hash = hashLatent(latent);
+			
+			if (!textureAtlas.has(hash) && activeTextureUrl) {
+				// Generate texture for this latent if needed
+				createTextureFromImage(activeTextureUrl).then(tex => {
+					textureAtlas.set(hash, tex);
+					targetTextureOpacity = Math.max(0, Math.min(1, texturingParameter + 0.5));
+				}).catch(e => console.error('Texture generation error:', e));
+			} else if (textureAtlas.has(hash)) {
+				targetTextureOpacity = Math.max(0, Math.min(1, texturingParameter + 0.5));
+			}
+		}
+
+		function applyTextureOverlay(textureCanvas) {
+			// Smoothly fade texture opacity
+			currentTextureOpacity += (targetTextureOpacity - currentTextureOpacity) * 0.1;
+			
+			renderTextureOverlay(textureCanvas, currentTextureOpacity);
+		}
+
+		async function addTexture() {
+			let imageUrl = $('textureImageUrl').value.trim();
+			if (!imageUrl) {
+				alert('Please enter a texture image URL');
+				return;
+			}
+			
+			try {
+				$('addTextureButton').disabled = true;
+				$('addTextureButton').textContent = 'Loading...';
+				
+				activeTextureUrl = imageUrl;
+				textureAtlas.clear();
+				currentTextureOpacity = 0;
+				targetTextureOpacity = 0;
+				
+				// Create initial texture
+				let texCanvas = await createTextureFromImage(imageUrl);
+				let hash = hashLatent(currentLatent);
+				textureAtlas.set(hash, texCanvas);
+				
+				$('textureImageUrl').value = '';
+				alert('Texture added! Adjust the Texturing parameter to control visibility.');
+				
+			} catch (error) {
+				console.error('Texture error:', error);
+				alert('Error loading texture: ' + error.message);
+				activeTextureUrl = null;
+			} finally {
+				$('addTextureButton').disabled = false;
+				$('addTextureButton').textContent = 'Add Texture';
+			}
+		}
+
+		function drawLatent(latent) {
+			let latentScaled = latent.map((val, i) => {
+				let weight = dimWeights[i % dimWeights.length];
+				return Math.max(0, Math.min(1, (val + 1) / 2 * weight + (1 - weight) * 0.5));
+			});
+
+			let netOutput = {};
+			for(let i = 0; i < latentScaled.length; i++) {
+				netOutput[i] = latentScaled[i];
+			}
+
+			let output = arrayify(decoder.run(netOutput));
+
+			let imageData = ctx.createImageData(16, 16);
+			let data = imageData.data;
+			for(let i = 0; i < output.length; i++) {
+				data[i * 4] = output[i] * 255;
+				data[i * 4 + 1] = output[i] * 255;
+				data[i * 4 + 2] = output[i] * 255;
+				data[i * 4 + 3] = 255;
+			}
+
+			ctx.putImageData(imageData, 0, 0);
+			
+			// Update texture for current latent
+			updateTextureForLatent(latent);
+			
+			// Apply texture overlay
+			let hash = hashLatent(latent);
+			if (textureAtlas.has(hash)) {
+				applyTextureOverlay(textureAtlas.get(hash));
+			}
+		}
+
+		function stepMotion() {
+			if(motionMode == 'smooth'){
+				currentLatent = currentLatent.map((val, i) => {
+					let target = (Math.random() - 0.5) * 2;
+					return val * 0.7 + target * 0.3;
+				});
+			} else if (motionMode == 'organic') {
+				for(let i = 0; i < 16; i++){
+					let randomness = (Math.random() - 0.5) * 2 * frameChange;
+					let noise = (Math.sin(noiseOffset * 0.02 + i) * 0.5 + 0.5 - 0.5) * 2 * frameChange;
+					velocity[i] = velocity[i] * momentum + (randomness + noise * 0.5) * (1 - momentum);
+					currentLatent[i] = Math.max(-1, Math.min(1, currentLatent[i] + velocity[i]));
+				}
+				noiseOffset++;
+			} else if (motionMode == 'directed') {
+				if(!targetLatent){
+					targetLatent = [];
+					for(let i=0;i<16;i++){targetLatent.push((Math.random() - 0.5) * 2.5)}
+				}
+				for(let i = 0; i < 16; i++){
+					let direction = targetLatent[i] - currentLatent[i];
+					velocity[i] = velocity[i] * momentum + direction * frameChange * (1 - momentum);
+					currentLatent[i] = Math.max(-1, Math.min(1, currentLatent[i] + velocity[i]));
+				}
+			} else if(motionMode == 'unfiltered'){
+				for(let i = 0; i < 16; i++){
+					let randomness = (Math.random() - 0.5) * 2 * frameChange * 1.5;
+					velocity[i] = velocity[i] * momentum + randomness * (1 - momentum);
+					currentLatent[i] = Math.max(-1, Math.min(1, currentLatent[i] + velocity[i]));
+				}
+			}
+			drawLatent(currentLatent);
+		}
+
+		let aliased = false;
+		function play() {
+			if(isPlaying) return;
+			isPlaying = true;
+			function frame() {
+				stepMotion();
+				animationId = setTimeout(frame, 1000 / fps);
+			}
+			frame();
+		}
+
+		function stop() {
+			isPlaying = false;
+			if(animationId) clearTimeout(animationId);
+		}
+
+		function recordScene() {
+			frames.push(currentLatent.slice());
+		}
+
+		function stopScene() {
+			if(frames.length == 0) {
+				alert('No frames recorded');
+				return;
+			}
+			stop();
+		}
+
+		function playScene() {
+			if(frames.length == 0) {
+				alert('No frames to play');
+				return;
+			}
+			stop();
+			let currentFrame = 0;
+			function sceneFrame() {
+				if(currentFrame >= frames.length) {
+					currentFrame = 0;
+				}
+				currentLatent = frames[currentFrame].slice();
+				drawLatent(currentLatent);
+				currentFrame++;
+				animationId = setTimeout(sceneFrame, 1000 / fps);
+			}
+			sceneFrame();
+		}
+
+		function trashScene() {
+			frames = [];
+		}
+
+		function updateTTSCueList() {
+			let html = '';
+			ttsCues.forEach((cue, idx) => {
+				html += '<div class="tts-cue-item">';
+				html += `<span>Frame ${cue.frame}: "${cue.text}"</span>`;
+				html += `<button onclick="ttsCues.splice(${idx}, 1); updateTTSCueList();">Remove</button>`;
+				html += '</div>';
+			});
+			$('ttsCueList').innerHTML = html;
+		}
+
+		async function encodeAndDisplay() {
+			let imageUrl = $('encodeImageUrl').value.trim();
+
+			if (!imageUrl) {
+				alert('Please enter an image URL');
+				return;
+			}
+
+			$('encodeButton').disabled = true;
+			$('encodeButton').textContent = 'Encoding...';
+
+			try {
+				let img = new Image();
+				img.crossOrigin = 'anonymous';
+				
+				await new Promise((resolve, reject) => {
+					img.onload = resolve;
+					img.onerror = () => reject(new Error('Failed to load image'));
+					img.src = imageUrl;
+				});
+
+				let tempCanvas = $('theVoices');
+				let tempCtx = tempCanvas.getContext('2d');
+				tempCtx.drawImage(img, 0, 0, 16, 16);
+				
+				let imageData = tempCtx.getImageData(0, 0, 16, 16);
+				let pixels = [];
+				
+				for (let i = 0; i < imageData.data.length; i += 4) {
+					pixels.push(imageData.data[i] / 255);
+					pixels.push(imageData.data[i + 1] / 255);
+					pixels.push(imageData.data[i + 2] / 255);
+				}
+
+				let latent = arrayify(encoder.run(pixels));
+
+				currentLatent = latent;
+				velocity.fill(0);
+				targetLatent = null;
+				drawLatent(currentLatent);
+				
+				// Automatically add texture from encoded image
+				if (!activeTextureUrl) {
+					activeTextureUrl = imageUrl;
+					let texCanvas = await createTextureFromImage(imageUrl);
+					let hash = hashLatent(currentLatent);
+					textureAtlas.set(hash, texCanvas);
+				}
+
+			} catch (error) {
+				console.error('Encoding error:', error);
+				alert('Error encoding image: ' + error.message);
+			} finally {
+				$('encodeButton').disabled = false;
+				$('encodeButton').textContent = 'Encode & Display';
+			}
+		}
+		
+		async function tuneModel() {
+			let imageUrl = $('tuneImageUrl').value.trim();
+			let iterations = parseInt($('tuneIterations').value);
+
+			if (!imageUrl) {
+				alert('Please enter an image URL');
+				return;
+			}
+
+			if (iterations < 10 || iterations > 10000) {
+				alert('Iterations must be between 10 and 10000');
+				return;
+			}
+
+			alert('Training started, open devtools console (F12) to see progress. The UI will freeze during training.');
+
+			$('tuneButton').disabled = true;
+			$('tuneButton').textContent = 'Training...';
+
+			try {
+				let img = new Image();
+				img.crossOrigin = 'anonymous';
+				
+				await new Promise((resolve, reject) => {
+					img.onload = resolve;
+					img.onerror = () => reject(new Error('Failed to load image'));
+					img.src = imageUrl;
+				});
+
+				let tempCanvas = $('theVoices');
+				let tempCtx = tempCanvas.getContext('2d');
+				tempCtx.drawImage(img, 0, 0, 16, 16);
+				
+				let imageData = tempCtx.getImageData(0, 0, 16, 16);
+				let pixels = [];
+				
+				for (let i = 0; i < imageData.data.length; i += 4) {
+					pixels.push(imageData.data[i] / 255);
+					pixels.push(imageData.data[i + 1] / 255);
+					pixels.push(imageData.data[i + 2] / 255);
+				}
+
+				console.log('Image loaded, pixel data length:', pixels.length);
+				console.log('Starting training with', iterations, 'iterations');
+
+				let encoderIterations = Math.floor(iterations * 0.6);
+				let decoderIterations = iterations - encoderIterations;
+
+				let encoderTraining = [{ input: pixels, output: currentLatent.length ? currentLatent : new Array(16).fill(0) }];
+				
+				console.log('Training encoder for', encoderIterations, 'iterations...');
+				encoder.train(encoderTraining, {
+					iterations: encoderIterations,
+					errorThresh: 0.000001,
+					log: true,
+					logPeriod: 10,
+					errorFunction: (target, output) => {
+						var reconstructionLoss = target.reduce((sum, val, i) => 
+							sum + Math.pow(val - output[i], 2), 0) / target.length;
+						
+						var mu = output.slice(0, 2);
+						var klDivergence = -0.5 * mu.reduce((sum, m) => 
+							sum + (1 + Math.log(0.01) - m * m - 0.01), 0);
+						
+						var beta = 0.1;
+						return reconstructionLoss + beta * klDivergence;
+					}
+				});
+
+				
+				let latent = arrayify(encoder.run(pixels));
+				console.log('Latent representation:', latent);
+
+				let decoderTraining = [{ input: latent, output: pixels }];
+
+				console.log('Training decoder for', decoderIterations, 'iterations...');
+				decoder.train(decoderTraining, {
+					iterations: decoderIterations,
+					errorThresh: 0.00001,
+					log: true,
+					logPeriod: 10
+				});
+
+				console.log('Training complete!');
+
+				currentLatent = latent;
+				velocity.fill(0);
+				drawLatent(currentLatent);
+				
+				// Automatically add texture from training image
+				if (!activeTextureUrl) {
+					activeTextureUrl = imageUrl;
+					let texCanvas = await createTextureFromImage(imageUrl);
+					let hash = hashLatent(currentLatent);
+					textureAtlas.set(hash, texCanvas);
+				}
+
+				alert('Training complete! Model has been tuned on your image.');
+
+			} catch (error) {
+				console.error('Training error:', error);
+				alert('Error during training: ' + error.message);
+			} finally {
+				$('tuneButton').disabled = false;
+				$('tuneButton').textContent = 'Train Model';
+			}
+		}
+
+		setInterval(() => {
+		$('framecount').innerHTML='Saved frames: '+frames.length+' | TTS Cues: '+ttsCues.length;
+		},1000);
+		$('scene_start').onclick = () => {recordScene();};
+		$('scene_end').onclick = () => {stopScene();};
+		$('scene_play').onclick = () => {playScene();};
+		$('scene_trash').onclick = () => {trashScene();};
+		$('tuneButton').onclick = tuneModel;
+		$('encodeButton').onclick = encodeAndDisplay;
+		$('addTextureButton').onclick = addTexture;
+
+		$('scene_tts').onclick = () => {
+			$('ttsFrameDisplay').textContent = frames.length;
+			$('ttsModal').style.display = 'block';
+			updateTTSCueList();
+		};
+
+		$('ttsCancel').onclick = () => {
+			$('ttsModal').style.display = 'none';
+			$('ttsText').value = '';
+		};
+
+		$('ttsAdd').onclick = () => {
+			let text = $('ttsText').value.trim();
+			if(!text) {
+				alert('Please enter some text');
+				return;
+			}
+			ttsCues.push({
+				frame: frames.length,
+				text: text,
+				voiceIndex: $('ttsVoice').value
+			});
+			$('ttsText').value = '';
+			updateTTSCueList();
+			alert('TTS cue added at frame ' + frames.length);
+		};
+
+		$('antialias').onclick = () => {
+			aliased = !aliased
+			if(aliased)$('content').style.imageRendering = 'initial';
+			else $('content').style.imageRendering = 'pixelated';
+		}
+		$('shift').oninput = () => {
+			frameChange = parseFloat($('shift').value);
+			$('shiftVal').textContent = frameChange.toFixed(2);
+		}
+
+		$('momentum').oninput = () => {
+			momentum = parseFloat($('momentum').value);
+			$('momentumVal').textContent = momentum.toFixed(2);
+		}
+
+		$('structure').oninput = () => {
+			structureStability = parseFloat($('structure').value);
+			$('structureVal').textContent = structureStability.toFixed(2);
+		}
+
+		$('texturing').oninput = () => {
+			texturingParameter = parseFloat($('texturing').value);
+			$('texturingVal').textContent = texturingParameter.toFixed(2);
+			targetTextureOpacity = Math.max(0, Math.min(1, texturingParameter + 0.5));
+		}
+
+		$('fps').oninput = () => {
+			fps = parseInt($('fps').value);
+			$('fpsVal').textContent = fps;
+		}
+
+		$('seedshift').onclick = () => {
+			stepMotion();
+		}
+		
+		$('playMotion').onclick = () => {play();};
+
+		$('stopMotion').onclick = () => {stop();};
+		$('seedran').onclick = () => {
+			let latent = [];
+			for(let i=0;i<16;i++){latent.push((Math.random() - 0.5) * 2)}
+			currentLatent = latent;
+			velocity.fill(0);
+			targetLatent = null;
+			drawLatent(currentLatent);
+		}
+
+		$('seedtroll').onclick=()=>{
+			currentLatent = [...Latents["troll_normal"]];
+			velocity.fill(0);
+			targetLatent = null;
+			drawLatent(currentLatent);
+		}
+		$('seedface1').onclick=()=>{
+			currentLatent = [...Latents["face_1"]];
+			velocity.fill(0);
+			targetLatent = null;
+			drawLatent(currentLatent);
+		}
+
+		$('seedbnrj').onclick=()=>{
+			currentLatent = [...Latents["jon_mud_brand_new_ripped_jeans"]];
+			velocity.fill(0);
+			targetLatent = null;
+			drawLatent(currentLatent);
+		}
+		$('seedbia').onclick=()=>{
+			currentLatent = [...Latents["bia_1"]];
+			velocity.fill(0);
+			targetLatent = null;
+			drawLatent(currentLatent);
+		}
+
+		$('seedmsn').onclick=()=>{
+			currentLatent = [...Latents["msn_1"]];
+			velocity.fill(0);
+			targetLatent = null;
+			drawLatent(currentLatent);
+		}
+
+		$('seedsmiley').onclick=()=>{
+			currentLatent = [...Latents["smiley_icon"]];
+			velocity.fill(0);
+			targetLatent = null;
+			drawLatent(currentLatent);
+		}
+
+		$('modeSmooth').onclick = () => {
+			motionMode = 'smooth';
+			$('currentMode').textContent = 'Smooth';
+		}
+
+		$('modeOrganic').onclick = () => {
+			motionMode = 'organic';
+			$('currentMode').textContent = 'Organic';
+		}
+
+		$('modeDirected').onclick = () => {
+			motionMode = 'directed';
+
+			targetLatent = [];
+			for(let i=0;i<16;i++){targetLatent.push((Math.random() - 0.5) * 2.5)}
+			$('currentMode').textContent = 'Directed';
+		}
+
+		$('modeUnfiltered').onclick = () => {
+			motionMode = 'unfiltered';
+			$('currentMode').textContent = 'Unfiltered';
+		}
+
+
+		let latent = [];
+		for(let i=0;i<16;i++){latent.push((Math.random() - 0.5) * 2)}
+		drawLatent(latent);
+	</script>
+</body>
+</html>
