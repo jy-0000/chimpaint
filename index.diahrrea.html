@@ -23,29 +23,7 @@
 		.control-group { margin: 8px 0; display: flex; align-items: center; gap: 10px; }
 		.control-group label { min-width: 180px; }
 		button { padding: 8px 12px; margin: 4px; cursor: pointer; }
-		
-		#canvas-container {
-			position: relative;
-			display: inline-block;
-			border: 2px solid #333;
-		}
-		
-		#content, #textureOverlay {
-			position: absolute;
-			top: 0;
-			left: 0;
-			image-rendering: pixelated;
-		}
-		
-		#content {
-			z-index: 1;
-		}
-		
-		#textureOverlay {
-			z-index: 2;
-			pointer-events: none;
-		}
-		
+		#content { border: 2px solid #333; image-rendering: pixelated; }
 		.section {
 			margin: 20px 0; padding: 15px; border:1px solid black;border-radius: 4px; 
     		background: linear-gradient(0deg,rgba(171, 205, 217, 1) 0%, rgba(143, 159, 161, 1) 13%, rgba(109, 130, 130, 1) 23%, rgba(93, 108, 115, 1) 34%, rgba(157, 172, 181, 1) 84%, rgba(230, 237, 237, 1) 100%);
@@ -134,10 +112,6 @@
 			padding: 4px 8px;
 			margin: 0;
 		}
-		
-		.texture-section {
-			background: linear-gradient(0deg,rgba(140, 180, 200, 1) 0%, rgba(120, 140, 160, 1) 100%);
-		}
 	</style>
 </head>
 <body>
@@ -148,12 +122,10 @@
 		<img src="./src/logo.png" width="200" height="auto">
 	</div>
 	<canvas id="theVoices" width="16" height="16"></canvas>
-	
-	<div id="canvas-container">
+	<div style="position:relative;display:inline-block;">
 		<canvas id="content" width="16" height="16" style="width:256px;height:256px;"></canvas>
-		<canvas id="textureOverlay" width="16" height="16" style="width:256px;height:256px;"></canvas>
+		<canvas id="overlayCanvas" width="256" height="256" style="position:absolute;left:0;top:0;width:256px;height:256px;pointer-events:none;image-rendering:pixelated;"></canvas>
 	</div>
-	
 	Anti Alias <input type="checkbox" id="antialias">
 	<br>
 	<button id="scene_start">🎞️</button>
@@ -200,22 +172,10 @@
 				<label>Stability: <span id="structureVal">0.3</span></label>
 				<input type="range" min="0.0" max="1.0" step="0.05" id="structure" value="0.3">
 			</div>
-		</div>
-	</div>
-
-	<div class="section texture-section">
-		<h3>Texture</h3>
-		<div class="controls">
 			<div class="control-group">
 				<label>Texturing: <span id="texturingVal">0.0</span></label>
-				<input type="range" min="-1.0" max="1.0" step="0.05" id="texturing" value="0.0">
+				<input type="range" min="0.0" max="1.0" step="0.05" id="texturing" value="0.0">
 			</div>
-			<div class="control-group">
-				<label>Texture URL (Image):</label>
-				<input type="text" id="textureImageUrl" placeholder="Enter image URL for texture overlay">
-				<button id="addTextureButton">Add Texture</button>
-			</div>
-			<small>⚠️ Textures are applied as grayscale detail overlays. Darker pixels provide more texture detail. Texture opacity is controlled by the Texturing parameter.</small>
 		</div>
 	</div>
 
@@ -278,6 +238,21 @@
 		</div>
 	</div>
 
+	<div class="section">
+		<h3>Texture Overlays</h3>
+		<div class="tuning-controls">
+			<div class="tuning-row">
+				<label>Overlay Image URL:</label>
+				<input type="text" id="overlayImageUrl" placeholder="Enter image URL for texture overlay" style="flex:1;padding:8px;">
+				<button id="addOverlayBtn">Add Overlay</button>
+			</div>
+			<small>Overlays extract dark pixel detail from the source image and blend it over the latent canvas. Only one overlay is active at a time.</small>
+			<div id="overlayAtlasList" style="margin-top:10px;max-height:160px;overflow-y:auto;border:1px solid rgba(0,0,0,0.3);padding:8px;background:rgba(255,255,255,0.1);border-radius:4px;">
+				<em>No overlays in atlas</em>
+			</div>
+		</div>
+	</div>
+
 	<script defer>
 		function $(a){return document.getElementById(a);}
 		function arrayify(netOut){
@@ -293,8 +268,6 @@
 		let availableVoices = [];
 		let canvas = $('content');
 		let ctx = canvas.getContext('2d');
-		let textureCanvas = $('textureOverlay');
-		let textureCtx = textureCanvas.getContext('2d');
 		
 		let encoder = new brain.NeuralNetwork({
 			hiddenLayers: [Math.floor(768 / 2), 16],
@@ -307,37 +280,6 @@
 			learningRate:0.03
 		});
 
-		// Initialize networks with dummy data so they're runnable
-		function initializeNetworks() {
-			let dummyInput = new Array(768).fill(0.5);
-			let dummyLatent = new Array(16).fill(0.5);
-			
-			try {
-				encoder.train([{ input: dummyInput, output: dummyLatent }], {
-					iterations: 1,
-					errorThresh: 0.5,
-					log: false
-				});
-				
-				decoder.train([{ input: dummyLatent, output: dummyInput }], {
-					iterations: 1,
-					errorThresh: 0.5,
-					log: false
-				});
-			} catch (e) {
-				console.warn('Network initialization:', e.message);
-			}
-		}
-		
-		// Initialize networks on page load
-		initializeNetworks();
-
-		// Texture overlay system
-		let textureAtlas = new Map(); // Maps latent hash to texture data
-		let currentTextureOpacity = 0;
-		let targetTextureOpacity = 0;
-		let texturingParameter = 0;
-		let activeTextureUrl = null;
 
 		let currentLatent = [];
 		let velocity = new Array(16).fill(0);
@@ -351,6 +293,181 @@
 		let fps = 24;
 		let noiseOffset = 0;
 
+		// ── Texture Overlay System ───────────────────────────────────────────
+		let overlayCanvas = $('overlayCanvas');
+		let overlayCtx = overlayCanvas.getContext('2d');
+		let overlayAtlas = [];       // { id, label, textureData (ImageData 256×256) }
+		let activeOverlayId = null;
+		let overlayFadeAnim = null;  // requestAnimationFrame handle
+		let overlayCurrentAlpha = 0; // current rendered alpha [0..1]
+		let overlayTargetAlpha = 0;  // alpha we're fading toward
+		let texturingParam = 0.0;    // controlled by the Texturing slider
+
+		/** Extract texture detail: keep dark pixels, fade whites to transparent */
+		function buildTextureData(sourceImg) {
+			let tmp = document.createElement('canvas');
+			tmp.width = 256; tmp.height = 256;
+			let tmpCtx = tmp.getContext('2d');
+			// Draw source at full res with high-contrast greyscale treatment
+			tmpCtx.filter = 'brightness(1.3) contrast(3) saturate(0) blur(1px)';
+			tmpCtx.drawImage(sourceImg, 0, 0, 256, 256);
+			tmpCtx.filter = 'none';
+
+			let data = tmpCtx.getImageData(0, 0, 256, 256);
+			let d = data.data;
+			for (let i = 0; i < d.length; i += 4) {
+				let luma = (d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114) / 255; // 0=black,1=white
+				// Dark pixels → opaque dark; light pixels → transparent
+				let darkness = 1.0 - luma;          // how dark [0..1]
+				let alpha = Math.pow(darkness, 1.8); // steepen the falloff
+				d[i]   = 0;
+				d[i+1] = 0;
+				d[i+2] = 0;
+				d[i+3] = Math.round(alpha * 255);
+			}
+			return data;
+		}
+
+		/** Render the overlay canvas at a given alpha (0..1), blended with texturingParam */
+		function renderOverlay(alpha) {
+			overlayCtx.clearRect(0, 0, 256, 256);
+			if (!activeOverlayId || alpha <= 0) return;
+			let entry = overlayAtlas.find(o => o.id === activeOverlayId);
+			if (!entry) return;
+
+			// Put the pre-built texture data into an offscreen canvas
+			let tmp = document.createElement('canvas');
+			tmp.width = 256; tmp.height = 256;
+			tmp.getContext('2d').putImageData(entry.textureData, 0, 0);
+
+			let effectiveAlpha = Math.min(1, alpha * (texturingParam > 0 ? texturingParam : 0));
+			overlayCtx.globalAlpha = effectiveAlpha;
+			overlayCtx.drawImage(tmp, 0, 0);
+			overlayCtx.globalAlpha = 1;
+		}
+
+		/** Smoothly animate overlay alpha toward target */
+		function animateOverlay() {
+			let diff = overlayTargetAlpha - overlayCurrentAlpha;
+			if (Math.abs(diff) < 0.004) {
+				overlayCurrentAlpha = overlayTargetAlpha;
+				renderOverlay(overlayCurrentAlpha);
+				overlayFadeAnim = null;
+				return;
+			}
+			overlayCurrentAlpha += diff * 0.07;
+			renderOverlay(overlayCurrentAlpha);
+			overlayFadeAnim = requestAnimationFrame(animateOverlay);
+		}
+
+		function startFade(targetAlpha) {
+			overlayTargetAlpha = targetAlpha;
+			if (!overlayFadeAnim) overlayFadeAnim = requestAnimationFrame(animateOverlay);
+		}
+
+		/** Activate an overlay by id (or null to deactivate) */
+		function activateOverlay(id) {
+			if (activeOverlayId === id) return; // already active
+			// Fade out current, then switch and fade in
+			if (overlayCurrentAlpha > 0 && activeOverlayId !== null) {
+				overlayTargetAlpha = 0;
+				// after fade out completes, switch
+				let waitSwitch = setInterval(() => {
+					if (overlayCurrentAlpha < 0.01) {
+						clearInterval(waitSwitch);
+						activeOverlayId = id;
+						if (id) startFade(1);
+						updateOverlayAtlasUI();
+					}
+				}, 50);
+				if (!overlayFadeAnim) overlayFadeAnim = requestAnimationFrame(animateOverlay);
+			} else {
+				activeOverlayId = id;
+				startFade(id ? 1 : 0);
+				updateOverlayAtlasUI();
+			}
+		}
+
+		/** When the latent changes, re-render overlay on top (called from drawLatent) */
+		function refreshOverlay() {
+			renderOverlay(overlayCurrentAlpha);
+		}
+
+		/** Add a new overlay to the atlas from a URL */
+		async function addOverlayFromUrl(url) {
+			let btn = $('addOverlayBtn');
+			btn.disabled = true; btn.textContent = 'Loading...';
+			try {
+				let img = new Image();
+				img.crossOrigin = 'anonymous';
+				await new Promise((res, rej) => {
+					img.onload = res;
+					img.onerror = () => rej(new Error('Failed to load overlay image'));
+					img.src = url;
+				});
+				let id = Date.now();
+				let label = url.split('/').pop().split('?')[0].substring(0, 32) || ('overlay-' + id);
+				let textureData = buildTextureData(img);
+				overlayAtlas.push({ id, label, textureData });
+				updateOverlayAtlasUI();
+				// Automatically activate the new overlay
+				activateOverlay(id);
+			} catch(e) {
+				alert('Failed to load overlay: ' + e.message);
+			} finally {
+				btn.disabled = false; btn.textContent = 'Add Overlay';
+			}
+		}
+
+		/** Transfer current canvas content to the active overlay (for tuning/drawing sync) */
+		function syncCanvasToOverlay() {
+			if (!activeOverlayId) return;
+			let entry = overlayAtlas.find(o => o.id === activeOverlayId);
+			if (!entry) return;
+			// Build texture from the current main canvas content
+			let tmp = document.createElement('canvas');
+			tmp.width = 256; tmp.height = 256;
+			let tmpCtx = tmp.getContext('2d');
+			tmpCtx.drawImage(canvas, 0, 0, 256, 256);
+			let syntheticImg = new Image();
+			syntheticImg.onload = () => {
+				entry.textureData = buildTextureData(syntheticImg);
+				renderOverlay(overlayCurrentAlpha);
+			};
+			syntheticImg.src = tmp.toDataURL();
+		}
+
+		function updateOverlayAtlasUI() {
+			let list = $('overlayAtlasList');
+			if (overlayAtlas.length === 0) {
+				list.innerHTML = '<em>No overlays in atlas</em>';
+				return;
+			}
+			list.innerHTML = '';
+			overlayAtlas.forEach(entry => {
+				let item = document.createElement('div');
+				item.className = 'tts-cue-item';
+				let isActive = entry.id === activeOverlayId;
+				item.style.outline = isActive ? '2px solid #7df' : 'none';
+				item.innerHTML = `
+					<span title="${entry.label}">${entry.label.substring(0,28)}${entry.label.length>28?'…':''}</span>
+					<span style="display:flex;gap:4px;">
+						<button onclick="activateOverlay(${isActive ? 'null' : entry.id})">${isActive ? 'Deactivate' : 'Activate'}</button>
+						<button onclick="removeOverlay(${entry.id})">✕</button>
+					</span>
+				`;
+				list.appendChild(item);
+			});
+		}
+
+		window.activateOverlay = activateOverlay;
+		window.removeOverlay = function(id) {
+			if (activeOverlayId === id) activateOverlay(null);
+			overlayAtlas = overlayAtlas.filter(o => o.id !== id);
+			updateOverlayAtlasUI();
+		};
+		// ── End Texture Overlay System ────────────────────────────────────────
+
 
 		let dimWeights = [
 			0.2, 0.2, 0.3, 0.2,
@@ -359,276 +476,198 @@
 			0.7, 0.7, 0.7, 0.7
 		];
 		
-		function hashLatent(latent) {
-			return latent.map(v => v.toFixed(3)).join(',');
-		}
+		encoder.fromJSON(generalNet["encoder"]);
+		decoder.fromJSON(generalNet["decoder"]);
 
-		function createTextureFromImage(imageUrl) {
-			return new Promise((resolve, reject) => {
-				let img = new Image();
-				img.crossOrigin = 'anonymous';
-				
-				img.onload = () => {
-					let tempCanvas = $('theVoices');
-					let tempCtx = tempCanvas.getContext('2d');
-					tempCtx.drawImage(img, 0, 0, 16, 16);
-					
-					let imageData = tempCtx.getImageData(0, 0, 16, 16);
-					let pixels = imageData.data;
-					
-					// Create texture: convert to grayscale and enhance contrast
-					let textureData = new Uint8ClampedArray(16 * 16 * 4);
-					for (let i = 0; i < pixels.length; i += 4) {
-						// Grayscale conversion
-						let gray = pixels[i] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + 2] * 0.114;
-						
-						// High contrast enhancement
-						gray = gray < 128 ? gray * 0.7 : 128 + (gray - 128) * 1.5;
-						gray = Math.max(0, Math.min(255, gray));
-						
-						// Apply blur via pre-processing
-						textureData[i] = gray;
-						textureData[i + 1] = gray;
-						textureData[i + 2] = gray;
-						textureData[i + 3] = 255; // Opaque initially
-					}
-					
-					// Create canvas with texture
-					let textureCanvas = document.createElement('canvas');
-					textureCanvas.width = 16;
-					textureCanvas.height = 16;
-					let tctx = textureCanvas.getContext('2d');
-					let tdata = tctx.createImageData(16, 16);
-					tdata.data.set(textureData);
-					tctx.putImageData(tdata, 0, 0);
-					
-					resolve(textureCanvas);
-				};
-				
-				img.onerror = () => reject(new Error('Failed to load texture image'));
-				img.src = imageUrl;
+		function loadVoices() {
+			availableVoices = speechSynthesis.getVoices();
+			let voiceSelect = $('ttsVoice');
+			voiceSelect.innerHTML = '<option value="">Default</option>';
+			availableVoices.forEach((voice, index) => {
+				let option = document.createElement('option');
+				option.value = index;
+				option.textContent = voice.name + ' (' + voice.lang + ')';
+				voiceSelect.appendChild(option);
 			});
 		}
 
-		function renderTextureOverlay(textureCanvas, opacity) {
-			textureCtx.clearRect(0, 0, textureCanvas.width, textureCanvas.height);
-			
-			if (!textureCanvas || opacity <= 0) return;
-			
-			// Draw the texture with fading alpha based on brightness
-			let imageData = textureCtx.getImageData(0, 0, 16, 16);
-			let pixels = imageData.data;
-			
-			let texData = textureCtx.createImageData(16, 16);
-			let tempCanvasCtx = textureCanvas.getContext('2d');
-			let tempImageData = tempCanvasCtx.getImageData(0, 0, 16, 16);
-			let tempPixels = tempImageData.data;
-			
-			for (let i = 0; i < pixels.length; i += 4) {
-				let gray = tempPixels[i]; // Grayscale value
-				
-				// Darker pixels get more opacity
-				let pixelOpacity = (255 - gray) / 255;
-				let finalAlpha = pixelOpacity * opacity * 255;
-				
-				texData.data[i] = 0;
-				texData.data[i + 1] = 0;
-				texData.data[i + 2] = 0;
-				texData.data[i + 3] = finalAlpha;
-			}
-			
-			textureCtx.putImageData(texData, 0, 0);
+		if (speechSynthesis.onvoiceschanged !== undefined) {
+			speechSynthesis.onvoiceschanged = loadVoices;
 		}
+		loadVoices();
 
-		function updateTextureForLatent(latent) {
-			let hash = hashLatent(latent);
-			
-			if (!textureAtlas.has(hash) && activeTextureUrl) {
-				// Generate texture for this latent if needed
-				createTextureFromImage(activeTextureUrl).then(tex => {
-					textureAtlas.set(hash, tex);
-					targetTextureOpacity = Math.max(0, Math.min(1, texturingParameter + 0.5));
-				}).catch(e => console.error('Texture generation error:', e));
-			} else if (textureAtlas.has(hash)) {
-				targetTextureOpacity = Math.max(0, Math.min(1, texturingParameter + 0.5));
-			}
-		}
-
-		function applyTextureOverlay(textureCanvas) {
-			// Smoothly fade texture opacity
-			currentTextureOpacity += (targetTextureOpacity - currentTextureOpacity) * 0.1;
-			
-			renderTextureOverlay(textureCanvas, currentTextureOpacity);
-		}
-
-		async function addTexture() {
-			let imageUrl = $('textureImageUrl').value.trim();
-			if (!imageUrl) {
-				alert('Please enter a texture image URL');
+		function updateTTSCueList() {
+			let cueList = $('ttsCueList');
+			if(ttsCues.length === 0) {
+				cueList.innerHTML = '<em>No cues added yet</em>';
 				return;
 			}
-			
-			try {
-				$('addTextureButton').disabled = true;
-				$('addTextureButton').textContent = 'Loading...';
-				
-				activeTextureUrl = imageUrl;
-				textureAtlas.clear();
-				currentTextureOpacity = 0;
-				targetTextureOpacity = 0;
-				
-				// Create initial texture
-				let texCanvas = await createTextureFromImage(imageUrl);
-				let hash = hashLatent(currentLatent);
-				textureAtlas.set(hash, texCanvas);
-				
-				$('textureImageUrl').value = '';
-				alert('Texture added! Adjust the Texturing parameter to control visibility.');
-				
-			} catch (error) {
-				console.error('Texture error:', error);
-				alert('Error loading texture: ' + error.message);
-				activeTextureUrl = null;
-			} finally {
-				$('addTextureButton').disabled = false;
-				$('addTextureButton').textContent = 'Add Texture';
+			cueList.innerHTML = '';
+			ttsCues.forEach((cue, index) => {
+				let item = document.createElement('div');
+				item.className = 'tts-cue-item';
+				item.innerHTML = `
+					<span><strong>Frame ${cue.frame}:</strong> "${cue.text.substring(0, 30)}${cue.text.length > 30 ? '...' : ''}"</span>
+					<button onclick="removeTTSCue(${index})">Remove</button>
+				`;
+				cueList.appendChild(item);
+			});
+		}
+
+		window.removeTTSCue = function(index) {
+			ttsCues.splice(index, 1);
+			updateTTSCueList();
+		}
+
+		function latentify(imgSrc){
+			let canvas2 = $('theVoices');
+			let ctx2 = canvas2.getContext('2d');
+			if(typeof imgSrc == 'string'){
+				let imgData = new Image();
+				imgData.src = imgSrc;
+				imgData.onload = () => {
+					ctx2.drawImage(imgData,0,0,canvas2.width,canvas2.height);
+					ctx
+				}
 			}
 		}
 
-		function drawLatent(latent) {
-			let latentScaled = latent.map((val, i) => {
-				let weight = dimWeights[i % dimWeights.length];
-				return Math.max(0, Math.min(1, (val + 1) / 2 * weight + (1 - weight) * 0.5));
-			});
+		function noise1D(x) {
+			let X = Math.floor(x) & 255;
+			x -= Math.floor(x);
+			let u = x * x * (3.0 - 2.0 * x);
+			let a = Math.sin(X * 12.9898 + 78.233) * 43758.5453;
+			let b = Math.sin((X + 1) * 12.9898 + 78.233) * 43758.5453;
+			a = a - Math.floor(a);
+			b = b - Math.floor(b);
+			return a * (1.0 - u) + b * u;
+		}
 
-			let netOutput = {};
-			for(let i = 0; i < latentScaled.length; i++) {
-				netOutput[i] = latentScaled[i];
+		function drawLatent(latentSpace){
+		    currentLatent = latentSpace;
+			let decoded = arrayify(decoder.run(latentSpace));
+			let newImg = ctx.getImageData(0,0,canvas.width,canvas.height);
+			for(let i=0;i<decoded.length;i+=4){
+				decoded.splice(i+3,0,1);
 			}
-
-			let output = [];
-			try {
-				output = arrayify(decoder.run(netOutput));
-			} catch (e) {
-				console.error('Decoder error:', e.message);
-				output = new Array(768).fill(0.5);
+			for(let i=0;i<newImg.data.length;i++){
+				newImg.data[i] = decoded[i]*255;
 			}
-
-			let imageData = ctx.createImageData(16, 16);
-			let data = imageData.data;
-			for(let i = 0; i < output.length; i++) {
-				data[i * 4] = output[i] * 255;
-				data[i * 4 + 1] = output[i] * 255;
-				data[i * 4 + 2] = output[i] * 255;
-				data[i * 4 + 3] = 255;
-			}
-
-			ctx.putImageData(imageData, 0, 0);
-			
-			// Update texture for current latent
-			updateTextureForLatent(latent);
-			
-			// Apply texture overlay
-			let hash = hashLatent(latent);
-			if (textureAtlas.has(hash)) {
-				applyTextureOverlay(textureAtlas.get(hash));
-			}
+			ctx.putImageData(newImg,0,0);
+			refreshOverlay();
 		}
 
 		function stepMotion() {
-			if(motionMode == 'smooth'){
-				currentLatent = currentLatent.map((val, i) => {
-					let target = (Math.random() - 0.5) * 2;
-					return val * 0.7 + target * 0.3;
-				});
-			} else if (motionMode == 'organic') {
-				for(let i = 0; i < 16; i++){
-					let randomness = (Math.random() - 0.5) * 2 * frameChange;
-					let noise = (Math.sin(noiseOffset * 0.02 + i) * 0.5 + 0.5 - 0.5) * 2 * frameChange;
-					velocity[i] = velocity[i] * momentum + (randomness + noise * 0.5) * (1 - momentum);
-					currentLatent[i] = Math.max(-1, Math.min(1, currentLatent[i] + velocity[i]));
+			noiseOffset += 0.02;
+
+			for(let i = 0; i < currentLatent.length; i++){
+				let acceleration = 0;
+				let dimWeight = dimWeights[i];
+				let stabilityFactor = i < 4 ? structureStability : 0;
+
+				switch(motionMode) {
+					case 'smooth':
+						acceleration = (Math.random() - 0.5) * frameChange * 0.15 * dimWeight;
+						break;
+
+					case 'organic':
+						let noiseVal = noise1D(i * 0.5 + noiseOffset) * 2 - 1;
+						acceleration = noiseVal * frameChange * 0.2 * dimWeight;
+						break;
+
+					case 'directed':
+						if(targetLatent) {
+							let diff = targetLatent[i] - currentLatent[i];
+							acceleration = diff * 0.08 * dimWeight;
+							acceleration += (Math.random() - 0.5) * frameChange * 0.05;
+						} else {
+							acceleration = (Math.random() - 0.5) * frameChange * 0.1 * dimWeight;
+						}
+						break;
+
+					case 'unfiltered':
+						acceleration = (Math.random() - 0.5) * frameChange * 0.4 * dimWeight;
+						velocity[i] *= 0.6; 
+						break;
 				}
-				noiseOffset++;
-			} else if (motionMode == 'directed') {
-				if(!targetLatent){
-					targetLatent = [];
-					for(let i=0;i<16;i++){targetLatent.push((Math.random() - 0.5) * 2.5)}
-				}
-				for(let i = 0; i < 16; i++){
-					let direction = targetLatent[i] - currentLatent[i];
-					velocity[i] = velocity[i] * momentum + direction * frameChange * (1 - momentum);
-					currentLatent[i] = Math.max(-1, Math.min(1, currentLatent[i] + velocity[i]));
-				}
-			} else if(motionMode == 'unfiltered'){
-				for(let i = 0; i < 16; i++){
-					let randomness = (Math.random() - 0.5) * 2 * frameChange * 1.5;
-					velocity[i] = velocity[i] * momentum + randomness * (1 - momentum);
-					currentLatent[i] = Math.max(-1, Math.min(1, currentLatent[i] + velocity[i]));
-				}
+
+				acceleration *= (1.0 - stabilityFactor);
+
+				let currentMomentum = motionMode === 'unfiltered' ? 0.6 : momentum;
+				velocity[i] = velocity[i] * currentMomentum + acceleration;
+				
+				let maxVel = motionMode === 'unfiltered' ? 0.8 : 0.4;
+				velocity[i] = Math.max(-maxVel, Math.min(maxVel, velocity[i]));
+				
+				currentLatent[i] += velocity[i];
+				
+				currentLatent[i] = Math.max(-3.5, Math.min(3.5, currentLatent[i]));
 			}
+
 			drawLatent(currentLatent);
 		}
-
-		let aliased = false;
-		function play() {
-			if(isPlaying) return;
-			isPlaying = true;
-			function frame() {
-				stepMotion();
-				animationId = setTimeout(frame, 1000 / fps);
-			}
-			frame();
+		let recordingVideo = false;
+		let globalAudio = new Audio();
+		function playAnimation() {
+			if(!isPlaying) return;
+			stepMotion();
+			animationId = setTimeout(() => {if(recordingVideo==true){frames.push(ctx.getImageData(0,0,canvas.width,canvas.height).data)}requestAnimationFrame(playAnimation)}, 1000/fps);
 		}
-
-		function stop() {
+		let aliased = false;
+		
+		function play(){
+			isPlaying = true;
+			playAnimation();
+		}
+		function stop(){
 			isPlaying = false;
 			if(animationId) clearTimeout(animationId);
 		}
-
-		function recordScene() {
-			frames.push(currentLatent.slice());
+		function recordScene(){
+			recordingVideo=true;
 		}
-
 		function stopScene() {
-			if(frames.length == 0) {
-				alert('No frames recorded');
-				return;
-			}
+			recordingVideo=false;
 			stop();
 		}
-
-		function playScene() {
-			if(frames.length == 0) {
-				alert('No frames to play');
-				return;
-			}
-			stop();
-			let currentFrame = 0;
-			function sceneFrame() {
-				if(currentFrame >= frames.length) {
-					currentFrame = 0;
-				}
-				currentLatent = frames[currentFrame].slice();
-				drawLatent(currentLatent);
-				currentFrame++;
-				animationId = setTimeout(sceneFrame, 1000 / fps);
-			}
-			sceneFrame();
-		}
-
-		function trashScene() {
+		function trashScene(){
 			frames = [];
+			ttsCues = [];
+			updateTTSCueList();
 		}
+		function playScene(sceneQueue = 1,audioSrc=''){
+			globalAudio = new Audio(audioSrc);
+			globalAudio.play();
+			if(frames.length === 0)return;
+			let frame = 0;
+			let triggeredCues = new Set();
 
-		function updateTTSCueList() {
-			let html = '';
-			ttsCues.forEach((cue, idx) => {
-				html += '<div class="tts-cue-item">';
-				html += `<span>Frame ${cue.frame}: "${cue.text}"</span>`;
-				html += `<button onclick="ttsCues.splice(${idx}, 1); updateTTSCueList();">Remove</button>`;
-				html += '</div>';
-			});
-			$('ttsCueList').innerHTML = html;
+			let draw = () => {
+				let newData = ctx.getImageData(0, 0, canvas.width, canvas.height); 
+				for(let i=0;i<newData.data.length;i++){
+					newData.data[i] = frames[frame][i];
+				}
+				ctx.putImageData(newData,0,0);
+
+				ttsCues.forEach((cue, index) => {
+					if(cue.frame === frame && !triggeredCues.has(index)) {
+						let utterance = new SpeechSynthesisUtterance(cue.text);
+						if(cue.voiceIndex !== '' && availableVoices[cue.voiceIndex]) {
+							utterance.voice = availableVoices[cue.voiceIndex];
+						}
+						speechSynthesis.speak(utterance);
+						triggeredCues.add(index);
+					}
+				});
+
+				if(frame < frames.length - 1) {
+					frame++;
+					setTimeout(draw, 1000 / fps); 
+				} else {
+					globalAudio.pause()
+				}
+			}
+			draw();
 		}
 
 		async function encodeAndDisplay() {
@@ -665,26 +704,13 @@
 					pixels.push(imageData.data[i + 2] / 255);
 				}
 
-				let latent = [];
-				try {
-					latent = arrayify(encoder.run(pixels));
-				} catch (e) {
-					console.error('Encoder error:', e.message);
-					latent = new Array(16).fill(0);
-				}
+				let latent = arrayify(encoder.run(pixels));
 
 				currentLatent = latent;
 				velocity.fill(0);
 				targetLatent = null;
 				drawLatent(currentLatent);
-				
-				// Automatically add texture from encoded image
-				if (!activeTextureUrl) {
-					activeTextureUrl = imageUrl;
-					let texCanvas = await createTextureFromImage(imageUrl);
-					let hash = hashLatent(currentLatent);
-					textureAtlas.set(hash, texCanvas);
-				}
+				syncCanvasToOverlay();
 
 			} catch (error) {
 				console.error('Encoding error:', error);
@@ -765,13 +791,7 @@
 				});
 
 				
-				let latent = [];
-				try {
-					latent = arrayify(encoder.run(pixels));
-				} catch (e) {
-					console.error('Encoder error after training:', e.message);
-					latent = new Array(16).fill(0);
-				}
+				let latent = arrayify(encoder.run(pixels));
 				console.log('Latent representation:', latent);
 
 				let decoderTraining = [{ input: latent, output: pixels }];
@@ -789,14 +809,7 @@
 				currentLatent = latent;
 				velocity.fill(0);
 				drawLatent(currentLatent);
-				
-				// Automatically add texture from training image
-				if (!activeTextureUrl) {
-					activeTextureUrl = imageUrl;
-					let texCanvas = await createTextureFromImage(imageUrl);
-					let hash = hashLatent(currentLatent);
-					textureAtlas.set(hash, texCanvas);
-				}
+				syncCanvasToOverlay();
 
 				alert('Training complete! Model has been tuned on your image.');
 
@@ -818,7 +831,6 @@
 		$('scene_trash').onclick = () => {trashScene();};
 		$('tuneButton').onclick = tuneModel;
 		$('encodeButton').onclick = encodeAndDisplay;
-		$('addTextureButton').onclick = addTexture;
 
 		$('scene_tts').onclick = () => {
 			$('ttsFrameDisplay').textContent = frames.length;
@@ -868,10 +880,16 @@
 		}
 
 		$('texturing').oninput = () => {
-			texturingParameter = parseFloat($('texturing').value);
-			$('texturingVal').textContent = texturingParameter.toFixed(2);
-			targetTextureOpacity = Math.max(0, Math.min(1, texturingParameter + 0.5));
+			texturingParam = parseFloat($('texturing').value);
+			$('texturingVal').textContent = texturingParam.toFixed(2);
+			renderOverlay(overlayCurrentAlpha);
 		}
+
+		$('addOverlayBtn').onclick = () => {
+			let url = $('overlayImageUrl').value.trim();
+			if (!url) { alert('Please enter an image URL'); return; }
+			addOverlayFromUrl(url);
+		};
 
 		$('fps').oninput = () => {
 			fps = parseInt($('fps').value);
