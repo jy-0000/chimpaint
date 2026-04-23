@@ -307,6 +307,31 @@
 			learningRate:0.03
 		});
 
+		// Initialize networks with dummy data so they're runnable
+		function initializeNetworks() {
+			let dummyInput = new Array(768).fill(0.5);
+			let dummyLatent = new Array(16).fill(0.5);
+			
+			try {
+				encoder.train([{ input: dummyInput, output: dummyLatent }], {
+					iterations: 1,
+					errorThresh: 0.5,
+					log: false
+				});
+				
+				decoder.train([{ input: dummyLatent, output: dummyInput }], {
+					iterations: 1,
+					errorThresh: 0.5,
+					log: false
+				});
+			} catch (e) {
+				console.warn('Network initialization:', e.message);
+			}
+		}
+		
+		// Initialize networks on page load
+		initializeNetworks();
+
 		// Texture overlay system
 		let textureAtlas = new Map(); // Maps latent hash to texture data
 		let currentTextureOpacity = 0;
@@ -481,7 +506,13 @@
 				netOutput[i] = latentScaled[i];
 			}
 
-			let output = arrayify(decoder.run(netOutput));
+			let output = [];
+			try {
+				output = arrayify(decoder.run(netOutput));
+			} catch (e) {
+				console.error('Decoder error:', e.message);
+				output = new Array(768).fill(0.5);
+			}
 
 			let imageData = ctx.createImageData(16, 16);
 			let data = imageData.data;
@@ -634,7 +665,13 @@
 					pixels.push(imageData.data[i + 2] / 255);
 				}
 
-				let latent = arrayify(encoder.run(pixels));
+				let latent = [];
+				try {
+					latent = arrayify(encoder.run(pixels));
+				} catch (e) {
+					console.error('Encoder error:', e.message);
+					latent = new Array(16).fill(0);
+				}
 
 				currentLatent = latent;
 				velocity.fill(0);
@@ -728,7 +765,13 @@
 				});
 
 				
-				let latent = arrayify(encoder.run(pixels));
+				let latent = [];
+				try {
+					latent = arrayify(encoder.run(pixels));
+				} catch (e) {
+					console.error('Encoder error after training:', e.message);
+					latent = new Array(16).fill(0);
+				}
 				console.log('Latent representation:', latent);
 
 				let decoderTraining = [{ input: latent, output: pixels }];
