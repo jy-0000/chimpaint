@@ -123,6 +123,7 @@
 	</div>
 	<canvas id="theVoices" width="16" height="16"></canvas>
 	<canvas id="content" width="16" height="16" style="width:256px;height:256px;"></canvas>
+	<img id="texturing" width="256" height="256" src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Kamala_Harris_Vice_Presidential_Portrait.jpg/960px-Kamala_Harris_Vice_Presidential_Portrait.jpg" style="opacity: 0;position:absolute;left: 30px;top: 218px;filter: brightness(1.3) contrast(1) saturate(0.2) blur(1px);">
 	Anti Alias <input type="checkbox" id="antialias">
 	<br>
 	<button id="scene_start">🎞️</button>
@@ -405,8 +406,14 @@
 				
 				currentLatent[i] = Math.max(-3.5, Math.min(3.5, currentLatent[i]));
 			}
-
+			
 			drawLatent(currentLatent);
+
+			let tex = document.getElementById('texturing');
+			let opacityOffset = (1-structureStability)/100;
+			let currentOpacity = parseFloat(tex.style.opacity);
+
+			tex.style.opacity = currentOpacity-opacityOffset;
 		}
 		let recordingVideo = false;
 		let globalAudio = new Audio();
