@@ -499,6 +499,7 @@
 					img.onload = resolve;
 					img.onerror = () => reject(new Error('Failed to load image'));
 					img.src = imageUrl;
+					texturing.src = imageUrl;
 				});
 
 				let tempCanvas = $('theVoices');
@@ -519,6 +520,7 @@
 				currentLatent = latent;
 				velocity.fill(0);
 				targetLatent = null;
+				texturing.style.opacity="0.2";
 				drawLatent(currentLatent);
 
 			} catch (error) {
@@ -621,7 +623,7 @@
 
 				texturing.style.opacity="0.2";
 				drawLatent(currentLatent);
-
+				
 				alert('Training complete! Model has been tuned on your image.');
 
 			} catch (error) {
