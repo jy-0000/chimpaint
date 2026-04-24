@@ -413,6 +413,7 @@
 			let opacityOffset = (1-structureStability)/100;
 			let currentOpacity = parseFloat(tex.style.opacity);
 
+			if(currentOpacity < 0)currentOpacity = 0;
 			tex.style.opacity = currentOpacity-opacityOffset;
 		}
 		let recordingVideo = false;
@@ -556,6 +557,7 @@
 					img.onload = resolve;
 					img.onerror = () => reject(new Error('Failed to load image'));
 					img.src = imageUrl;
+					texturing.src = imageUrl;
 				});
 
 				let tempCanvas = $('theVoices');
@@ -616,6 +618,8 @@
 
 				currentLatent = latent;
 				velocity.fill(0);
+
+				texturing.style.opacity="0.2";
 				drawLatent(currentLatent);
 
 				alert('Training complete! Model has been tuned on your image.');
