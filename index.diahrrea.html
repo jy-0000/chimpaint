@@ -341,7 +341,7 @@
 	// reuse working canvas
 	overlayWorkCtx.putImageData(entry.textureData, 0, 0);
 
-	let effectiveAlpha = Math.min(1, alpha * texturingParam * 1.5);
+	let effectiveAlpha = 1;//Math.min(1, alpha * texturingParam * 1.5);
 	overlayCtx.globalAlpha = effectiveAlpha;
 	overlayCtx.drawImage(overlayWorkCanvas, 0, 0);
 	overlayCtx.globalAlpha = 1;
