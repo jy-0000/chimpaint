@@ -121,11 +121,10 @@
 	<div class="menu">
 		<img src="./src/logo.png" width="200" height="auto">
 	</div>
-	<canvas id="overlayWork" width="256" height="256" style="display:none;"></canvas>
 	<canvas id="theVoices" width="16" height="16"></canvas>
 	<div style="position:relative;display:inline-block;">
-		<canvas id="content" width="16" height="16" style="width:256px;height:256px;"></canvas>
-		<canvas id="overlayCanvas" width="256" height="256" style="position:absolute;left:0;top:0;width:256px;height:256px;pointer-events:none;image-rendering:pixelated;"></canvas>
+		<canvas id="content" width="16" height="16" style="width:256px;height:256px;display:block;"></canvas>
+		<canvas id="overlayCanvas" width="256" height="256" style="position:absolute;top:0;left:0;width:256px;height:256px;pointer-events:none;image-rendering:pixelated;"></canvas>
 	</div>
 	Anti Alias <input type="checkbox" id="antialias">
 	<br>
@@ -174,8 +173,8 @@
 				<input type="range" min="0.0" max="1.0" step="0.05" id="structure" value="0.3">
 			</div>
 			<div class="control-group">
-				<label>Texturing: <span id="texturingVal">0.0</span></label>
-				<input type="range" min="0.0" max="1.0" step="0.05" id="texturing" value="0.0">
+				<label>Texturing: <span id="texturingVal">0.5</span></label>
+				<input type="range" min="0.0" max="1.0" step="0.05" id="texturing" value="0.5">
 			</div>
 		</div>
 	</div>
@@ -240,16 +239,24 @@
 	</div>
 
 	<div class="section">
-		<h3>Texture Overlays</h3>
+		<h3>Texture Overlay Atlas</h3>
 		<div class="tuning-controls">
 			<div class="tuning-row">
 				<label>Overlay Image URL:</label>
-				<input type="text" id="overlayImageUrl" placeholder="Enter image URL for texture overlay" style="flex:1;padding:8px;">
-				<button id="addOverlayBtn">Add Overlay</button>
+				<input type="text" id="overlayImageUrl" placeholder="Enter image URL to add as overlay texture">
+				<input type="text" id="overlayName" placeholder="Name (optional)" style="width:140px;padding:8px;">
+				<button id="addOverlayButton">Add to Atlas</button>
 			</div>
-			<small>Overlays extract dark pixel detail from the source image and blend it over the latent canvas. Only one overlay is active at a time.</small>
-			<div id="overlayAtlasList" style="margin-top:10px;max-height:160px;overflow-y:auto;border:1px solid rgba(0,0,0,0.3);padding:8px;background:rgba(255,255,255,0.1);border-radius:4px;">
-				<em>No overlays in atlas</em>
+			<small>⚠️ The overlay will be encoded to the current latent and stored. It fades in when the latent resembles it.</small>
+			<div style="margin-top:10px;">
+				<strong>Atlas Entries:</strong>
+				<div id="atlasList" style="margin-top:8px;max-height:160px;overflow-y:auto;border:1px solid rgba(0,0,0,0.3);padding:8px;background:rgba(255,255,255,0.1);border-radius:4px;">
+					<em>No overlays in atlas yet.</em>
+				</div>
+			</div>
+			<div style="margin-top:8px;">
+				<strong>Active Overlay:</strong> <span id="activeOverlayName" style="font-style:italic;">None</span>
+				&nbsp;|&nbsp; Similarity: <span id="overlaySimilarity">—</span>
 			</div>
 		</div>
 	</div>
@@ -293,191 +300,6 @@
 		let animationId = null;
 		let fps = 24;
 		let noiseOffset = 0;
-
-		// ── Texture Overlay System ───────────────────────────────────────────
-		let overlayCanvas = $('overlayCanvas');
-		let overlayCtx = overlayCanvas.getContext('2d');
-		let overlayAtlas = [];       // { id, label, textureData (ImageData 256×256) }
-		let activeOverlayId = null;
-		let overlayFadeAnim = null;  // requestAnimationFrame handle
-		let overlayCurrentAlpha = 0; // current rendered alpha [0..1]
-		let overlayTargetAlpha = 0;  // alpha we're fading toward
-		let texturingParam = 0.0;    // controlled by the Texturing slider
-		let overlayWorkCanvas = $('overlayWork');
-		let overlayWorkCtx = overlayWorkCanvas.getContext('2d');
-
-		/** Extract texture detail: keep dark pixels, fade whites to transparent */
-		function buildTextureData(sourceImg) {
-	overlayWorkCtx.clearRect(0, 0, 256, 256);
-
-	overlayWorkCtx.filter = 'brightness(1.1) contrast(1.1) saturate(0) blur(1px)';
-	overlayWorkCtx.drawImage(sourceImg, 0, 0, 256, 256);
-	overlayWorkCtx.filter = 'none';
-
-	let data = overlayWorkCtx.getImageData(0, 0, 256, 256);
-	let d = data.data;
-
-	for (let i = 0; i < d.length; i += 4) {
-		let luma = (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114) / 255;
-		let darkness = 1.0 - luma;
-		let alpha = Math.pow(darkness, 1.8);
-
-		d[i] = 0;
-		d[i+1] = 0;
-		d[i+2] = 0;
-		d[i+3] = Math.round(alpha * 255);
-	}
-	return data;
-}
-
-		/** Render the overlay canvas at a given alpha (0..1), blended with texturingParam */
-		function renderOverlay(alpha) {
-	overlayCtx.clearRect(0, 0, 256, 256);
-	if (!activeOverlayId || alpha <= 0) return;
-
-	let entry = overlayAtlas.find(o => o.id === activeOverlayId);
-	if (!entry) return;
-
-	// reuse working canvas
-	overlayWorkCtx.putImageData(entry.textureData, 0, 0);
-
-	let effectiveAlpha = 1;//Math.min(1, alpha * texturingParam * 1.5);
-	overlayCtx.globalAlpha = effectiveAlpha;
-	overlayCtx.drawImage(overlayWorkCanvas, 0, 0);
-	overlayCtx.globalAlpha = 1;
-}
-
-		/** Smoothly animate overlay alpha toward target */
-		function animateOverlay() {
-			let diff = overlayTargetAlpha - overlayCurrentAlpha;
-			if (Math.abs(diff) < 0.004) {
-				overlayCurrentAlpha = overlayTargetAlpha;
-				renderOverlay(overlayCurrentAlpha);
-				overlayFadeAnim = null;
-				return;
-			}
-			overlayCurrentAlpha += diff * 0.07;
-			renderOverlay(overlayCurrentAlpha);
-			overlayFadeAnim = requestAnimationFrame(animateOverlay);
-		}
-
-		function startFade(targetAlpha) {
-			overlayTargetAlpha = targetAlpha;
-			if (!overlayFadeAnim) overlayFadeAnim = requestAnimationFrame(animateOverlay);
-		}
-
-		/** Activate an overlay by id (or null to deactivate) */
-		function activateOverlay(id) {
-			if (activeOverlayId === id) return; // already active
-			// Fade out current, then switch and fade in
-			if (overlayCurrentAlpha > 0 && activeOverlayId !== null) {
-				overlayTargetAlpha = 0;
-				// after fade out completes, switch
-				let waitSwitch = setInterval(() => {
-					if (overlayCurrentAlpha < 0.01) {
-						clearInterval(waitSwitch);
-						activeOverlayId = id;
-						if (id) startFade(1);
-						updateOverlayAtlasUI();
-					}
-				}, 50);
-				if (!overlayFadeAnim) overlayFadeAnim = requestAnimationFrame(animateOverlay);
-			} else {
-				activeOverlayId = id;
-				startFade(id ? 1 : 0);
-				updateOverlayAtlasUI();
-			}
-		}
-
-		/** When the latent changes, re-render overlay on top (called from drawLatent) */
-		function refreshOverlay() {
-			renderOverlay(overlayCurrentAlpha);
-		}
-
-		/** Add a new overlay to the atlas from a URL */
-		async function addOverlayFromUrl(url) {
-			let btn = $('addOverlayBtn');
-			btn.disabled = true; btn.textContent = 'Loading...';
-			try {
-				let img = new Image();
-				img.crossOrigin = 'anonymous';
-				await new Promise((res, rej) => {
-					img.onload = res;
-					img.onerror = () => rej(new Error('Failed to load overlay image'));
-					img.src = url;
-				});
-				let id = Date.now();
-				let label = url.split('/').pop().split('?')[0].substring(0, 32) || ('overlay-' + id);
-				let textureData = buildTextureData(img);
-				overlayAtlas.push({ id, label, textureData });
-				updateOverlayAtlasUI();
-				// Automatically activate the new overlay
-				activateOverlay(id);
-			} catch(e) {
-				alert('Failed to load overlay: ' + e.message);
-			} finally {
-				btn.disabled = false; btn.textContent = 'Add Overlay';
-			}
-		}
-
-		/** Transfer current canvas content to the active overlay (for tuning/drawing sync) */
-		function syncCanvasToOverlay() {
-	if (!activeOverlayId) return;
-	let entry = overlayAtlas.find(o => o.id === activeOverlayId);
-	if (!entry) return;
-
-	overlayWorkCtx.clearRect(0, 0, 256, 256);
-	overlayWorkCtx.drawImage(canvas, 0, 0, 256, 256);
-
-	let data = overlayWorkCtx.getImageData(0, 0, 256, 256);
-
-	// reuse processing logic directly (avoid re-encoding via Image())
-	let d = data.data;
-	for (let i = 0; i < d.length; i += 4) {
-		let luma = (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114) / 255;
-		let darkness = 1.0 - luma;
-		let alpha = Math.pow(darkness, 1.8);
-
-		d[i] = 0;
-		d[i+1] = 0;
-		d[i+2] = 0;
-		d[i+3] = Math.round(alpha * 255);
-	}
-
-	entry.textureData = data;
-	renderOverlay(overlayCurrentAlpha);
-}
-
-		function updateOverlayAtlasUI() {
-			let list = $('overlayAtlasList');
-			if (overlayAtlas.length === 0) {
-				list.innerHTML = '<em>No overlays in atlas</em>';
-				return;
-			}
-			list.innerHTML = '';
-			overlayAtlas.forEach(entry => {
-				let item = document.createElement('div');
-				item.className = 'tts-cue-item';
-				let isActive = entry.id === activeOverlayId;
-				item.style.outline = isActive ? '2px solid #7df' : 'none';
-				item.innerHTML = `
-					<span title="${entry.label}">${entry.label.substring(0,28)}${entry.label.length>28?'…':''}</span>
-					<span style="display:flex;gap:4px;">
-						<button onclick="activateOverlay(${isActive ? 'null' : entry.id})">${isActive ? 'Deactivate' : 'Activate'}</button>
-						<button onclick="removeOverlay(${entry.id})">✕</button>
-					</span>
-				`;
-				list.appendChild(item);
-			});
-		}
-
-		window.activateOverlay = activateOverlay;
-		window.removeOverlay = function(id) {
-			if (activeOverlayId === id) activateOverlay(null);
-			overlayAtlas = overlayAtlas.filter(o => o.id !== id);
-			updateOverlayAtlasUI();
-		};
-		// ── End Texture Overlay System ────────────────────────────────────────
 
 
 		let dimWeights = [
@@ -554,7 +376,7 @@
 			return a * (1.0 - u) + b * u;
 		}
 
-		function drawLatent(latentSpace){
+		let drawLatent = function(latentSpace){
 		    currentLatent = latentSpace;
 			let decoded = arrayify(decoder.run(latentSpace));
 			let newImg = ctx.getImageData(0,0,canvas.width,canvas.height);
@@ -565,8 +387,7 @@
 				newImg.data[i] = decoded[i]*255;
 			}
 			ctx.putImageData(newImg,0,0);
-			refreshOverlay();
-		}
+		};
 
 		function stepMotion() {
 			noiseOffset += 0.02;
@@ -721,7 +542,6 @@
 				velocity.fill(0);
 				targetLatent = null;
 				drawLatent(currentLatent);
-				syncCanvasToOverlay();
 
 			} catch (error) {
 				console.error('Encoding error:', error);
@@ -820,7 +640,6 @@
 				currentLatent = latent;
 				velocity.fill(0);
 				drawLatent(currentLatent);
-				syncCanvasToOverlay();
 
 				alert('Training complete! Model has been tuned on your image.');
 
@@ -889,18 +708,6 @@
 			structureStability = parseFloat($('structure').value);
 			$('structureVal').textContent = structureStability.toFixed(2);
 		}
-
-		$('texturing').oninput = () => {
-			texturingParam = parseFloat($('texturing').value);
-			$('texturingVal').textContent = texturingParam.toFixed(2);
-			renderOverlay(overlayCurrentAlpha);
-		}
-
-		$('addOverlayBtn').onclick = () => {
-			let url = $('overlayImageUrl').value.trim();
-			if (!url) { alert('Please enter an image URL'); return; }
-			addOverlayFromUrl(url);
-		};
 
 		$('fps').oninput = () => {
 			fps = parseInt($('fps').value);
@@ -986,6 +793,287 @@
 			$('currentMode').textContent = 'Unfiltered';
 		}
 
+
+		// ─── TEXTURE OVERLAY ATLAS SYSTEM ────────────────────────────────────────
+
+		let texturingStrength = 0.5; // controlled by slider
+
+		// overlayCanvas is always 256x256 (full res)
+		let overlayCanvas = $('overlayCanvas');
+		let overlayCtx = overlayCanvas.getContext('2d');
+
+		// Atlas: array of { name, latent[16], imageData(256x256 RGBA), currentAlpha }
+		let overlayAtlas = [];
+		let activeOverlayIndex = -1;
+		let overlayFadeSpeed = 0.04; // alpha step per drawLatent call
+
+		// ── Cosine similarity between two latent arrays ──────────────────────────
+		function latentSimilarity(a, b) {
+			let dot = 0, magA = 0, magB = 0;
+			for (let i = 0; i < a.length; i++) {
+				dot += a[i] * b[i];
+				magA += a[i] * a[i];
+				magB += b[i] * b[i];
+			}
+			if (magA === 0 || magB === 0) return 0;
+			return dot / (Math.sqrt(magA) * Math.sqrt(magB)); // -1..1
+		}
+
+		// ── Extract texture detail from a full-res ImageData ──────────────────────
+		// Returns a Uint8ClampedArray (RGBA) where:
+		//   - dark pixels are kept with full alpha
+		//   - bright pixels get alpha near 0
+		// This ensures only ink/texture is painted, whites are transparent.
+		function extractTextureDetail(imageData) {
+			let src = imageData.data;
+			let out = new Uint8ClampedArray(src.length);
+			for (let i = 0; i < src.length; i += 4) {
+				let r = src[i], g = src[i+1], b = src[i+2];
+				// Perceived luminance
+				let lum = 0.299*r + 0.587*g + 0.114*b;
+				// darkness factor: 0=white, 1=black
+				let darkness = 1 - (lum / 255);
+				// Sharpen threshold: only pixels darker than ~0.25 get meaningful alpha
+				// Apply a curve: darkness^1.5 makes midtones lighter, keeps darks dark
+				let alpha = Math.pow(Math.max(0, darkness - 0.15) / 0.85, 1.5);
+				alpha = Math.min(1, alpha);
+				out[i]   = r;
+				out[i+1] = g;
+				out[i+2] = b;
+				out[i+3] = Math.round(alpha * 255);
+			}
+			return out;
+		}
+
+		// ── Load an image URL at full res, downscale to 256x256, extract texture ─
+		async function loadOverlayImage(url) {
+			let img = new Image();
+			img.crossOrigin = 'anonymous';
+			await new Promise((resolve, reject) => {
+				img.onload = resolve;
+				img.onerror = () => reject(new Error('Failed to load overlay image'));
+				img.src = url;
+			});
+			// Use an offscreen 256x256 canvas to get full-resolution pixel data
+			let offscreen = document.createElement('canvas');
+			offscreen.width = 256;
+			offscreen.height = 256;
+			let offCtx = offscreen.getContext('2d');
+			offCtx.drawImage(img, 0, 0, 256, 256);
+			let imageData = offCtx.getImageData(0, 0, 256, 256);
+			return imageData;
+		}
+
+		// ── Encode image URL into a 16-dim latent (same pipeline as existing code) ─
+		async function encodeToLatent(url) {
+			let img = new Image();
+			img.crossOrigin = 'anonymous';
+			await new Promise((resolve, reject) => {
+				img.onload = resolve;
+				img.onerror = () => reject(new Error('Failed to load image for encoding'));
+				img.src = url;
+			});
+			let tempCanvas = $('theVoices');
+			let tempCtx = tempCanvas.getContext('2d');
+			tempCtx.drawImage(img, 0, 0, 16, 16);
+			let imageData = tempCtx.getImageData(0, 0, 16, 16);
+			let pixels = [];
+			for (let i = 0; i < imageData.data.length; i += 4) {
+				pixels.push(imageData.data[i] / 255);
+				pixels.push(imageData.data[i+1] / 255);
+				pixels.push(imageData.data[i+2] / 255);
+			}
+			return arrayify(encoder.run(pixels));
+		}
+
+		// ── Paint the overlay canvas based on atlas similarity to current latent ──
+		// Only the best-matching entry is shown; all others fade out.
+		function updateOverlayCanvas() {
+			if (overlayAtlas.length === 0) {
+				overlayCtx.clearRect(0, 0, 256, 256);
+				$('activeOverlayName').textContent = 'None';
+				$('overlaySimilarity').textContent = '—';
+				return;
+			}
+
+			// Find best matching atlas entry (cosine similarity)
+			let bestIdx = -1;
+			let bestSim = -Infinity;
+			for (let i = 0; i < overlayAtlas.length; i++) {
+				let sim = latentSimilarity(currentLatent, overlayAtlas[i].latent);
+				if (sim > bestSim) { bestSim = sim; bestIdx = i; }
+			}
+
+			// Normalize similarity to 0..1 range (cos is -1..1, meaningful range ~0.5..1)
+			let normalizedSim = Math.max(0, (bestSim - 0.3) / 0.7);
+			// Target alpha = normalizedSim * texturingStrength
+			let targetAlpha = normalizedSim * texturingStrength;
+
+			// Fade each entry
+			for (let i = 0; i < overlayAtlas.length; i++) {
+				if (i === bestIdx) {
+					// Fade toward target
+					if (overlayAtlas[i].currentAlpha < targetAlpha) {
+						overlayAtlas[i].currentAlpha = Math.min(targetAlpha, overlayAtlas[i].currentAlpha + overlayFadeSpeed);
+					} else {
+						overlayAtlas[i].currentAlpha = Math.max(targetAlpha, overlayAtlas[i].currentAlpha - overlayFadeSpeed);
+					}
+				} else {
+					// Fade to 0
+					overlayAtlas[i].currentAlpha = Math.max(0, overlayAtlas[i].currentAlpha - overlayFadeSpeed);
+				}
+			}
+
+			// Find the one entry with the highest alpha to render (only one at a time)
+			let renderIdx = -1;
+			let maxAlpha = 0.001;
+			for (let i = 0; i < overlayAtlas.length; i++) {
+				if (overlayAtlas[i].currentAlpha > maxAlpha) {
+					maxAlpha = overlayAtlas[i].currentAlpha;
+					renderIdx = i;
+				}
+			}
+
+			overlayCtx.clearRect(0, 0, 256, 256);
+
+			if (renderIdx !== -1 && overlayAtlas[renderIdx].currentAlpha > 0.001) {
+				let entry = overlayAtlas[renderIdx];
+				let alpha = entry.currentAlpha;
+
+				// Write texture pixels with per-pixel alpha modulated by entry alpha
+				let imgData = overlayCtx.createImageData(256, 256);
+				let src = entry.texturePixels;
+				let dst = imgData.data;
+				for (let i = 0; i < dst.length; i += 4) {
+					dst[i]   = src[i];
+					dst[i+1] = src[i+1];
+					dst[i+2] = src[i+2];
+					dst[i+3] = Math.round(src[i+3] * alpha);
+				}
+				overlayCtx.putImageData(imgData, 0, 0);
+
+				$('activeOverlayName').textContent = entry.name + ' (α=' + alpha.toFixed(2) + ')';
+				$('overlaySimilarity').textContent = (bestSim * 100).toFixed(1) + '%';
+			} else {
+				$('activeOverlayName').textContent = 'None';
+				$('overlaySimilarity').textContent = bestSim !== -Infinity ? (bestSim * 100).toFixed(1) + '%' : '—';
+			}
+		}
+
+		// ── Hook drawLatent to also update overlay ────────────────────────────────
+		let _origDrawLatent = drawLatent;
+		drawLatent = function(latentSpace) {
+			_origDrawLatent(latentSpace);
+			updateOverlayCanvas();
+		};
+
+		// ── Also update overlay when tuning/drawing sets a new latent ─────────────
+		// (already handled since drawLatent is always called after those ops)
+
+		// ── Add overlay to atlas ──────────────────────────────────────────────────
+		async function addOverlayToAtlas() {
+			let url = $('overlayImageUrl').value.trim();
+			let name = $('overlayName').value.trim() || ('Overlay ' + (overlayAtlas.length + 1));
+			if (!url) { alert('Please enter an image URL'); return; }
+
+			let btn = $('addOverlayButton');
+			btn.disabled = true;
+			btn.textContent = 'Loading...';
+
+			try {
+				// Encode to latent (using same pipeline as rest of app)
+				let latent16 = await encodeToLatent(url);
+
+				// Load full 256x256 image and extract texture
+				let fullImageData = await loadOverlayImage(url);
+				let texturePixels = extractTextureDetail(fullImageData);
+
+				overlayAtlas.push({
+					name: name,
+					latent: latent16,
+					texturePixels: texturePixels,
+					currentAlpha: 0
+				});
+
+				renderAtlasList();
+				alert('Overlay "' + name + '" added to atlas! It will fade in when the latent resembles it.');
+			} catch(e) {
+				alert('Error adding overlay: ' + e.message);
+			} finally {
+				btn.disabled = false;
+				btn.textContent = 'Add to Atlas';
+			}
+		}
+
+		// ── Add current canvas as overlay (for tuning/drawing integration) ────────
+		function addCurrentCanvasAsOverlay(name) {
+			if (!name) name = 'Canvas Overlay ' + (overlayAtlas.length + 1);
+			// Grab 256x256 render from the content canvas (upscaled) 
+			let offscreen = document.createElement('canvas');
+			offscreen.width = 256;
+			offscreen.height = 256;
+			let offCtx = offscreen.getContext('2d');
+			// Draw the 16x16 canvas scaled up to 256x256
+			offCtx.imageSmoothingEnabled = false;
+			offCtx.drawImage(canvas, 0, 0, 256, 256);
+			let imageData = offCtx.getImageData(0, 0, 256, 256);
+			let texturePixels = extractTextureDetail(imageData);
+			overlayAtlas.push({
+				name: name,
+				latent: [...currentLatent],
+				texturePixels: texturePixels,
+				currentAlpha: 0
+			});
+			renderAtlasList();
+		}
+
+		// ── Render atlas list UI ──────────────────────────────────────────────────
+		function renderAtlasList() {
+			let list = $('atlasList');
+			if (overlayAtlas.length === 0) {
+				list.innerHTML = '<em>No overlays in atlas yet.</em>';
+				return;
+			}
+			list.innerHTML = '';
+			overlayAtlas.forEach((entry, idx) => {
+				let row = document.createElement('div');
+				row.className = 'tts-cue-item';
+				row.innerHTML = `
+					<span><strong>${entry.name}</strong> &nbsp; latent: [${entry.latent.slice(0,4).map(v=>v.toFixed(2)).join(', ')}...]</span>
+					<div style="display:flex;gap:4px;">
+						<button onclick="previewOverlay(${idx})">👁 Preview</button>
+						<button onclick="removeOverlay(${idx})">✕</button>
+					</div>
+				`;
+				list.appendChild(row);
+			});
+		}
+
+		window.removeOverlay = function(idx) {
+			overlayAtlas.splice(idx, 1);
+			renderAtlasList();
+			updateOverlayCanvas();
+		};
+
+		window.previewOverlay = function(idx) {
+			// Force alpha to full for 2 seconds then let it fade naturally
+			if (overlayAtlas[idx]) {
+				overlayAtlas[idx].currentAlpha = texturingStrength;
+				updateOverlayCanvas();
+			}
+		};
+
+		// ── Wire up Add to Atlas button ───────────────────────────────────────────
+		$('addOverlayButton').onclick = addOverlayToAtlas;
+
+		// ── Texturing slider ──────────────────────────────────────────────────────
+		$('texturing').oninput = () => {
+			texturingStrength = parseFloat($('texturing').value);
+			$('texturingVal').textContent = texturingStrength.toFixed(2);
+			updateOverlayCanvas();
+		};
+
+		// ─────────────────────────────────────────────────────────────────────────
 
 		let latent = [];
 		for(let i=0;i<16;i++){latent.push((Math.random() - 0.5) * 2)}
